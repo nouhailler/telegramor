@@ -96,5 +96,24 @@ class AppSettings:
     def last_import_dir(self, v: str) -> None:
         self.s.setValue("last/import_dir", v)
 
+    # -- Copie de médias ------------------------------------------------------ #
+    @property
+    def last_export_dir(self) -> str:
+        return str(self.s.value("export/dir", ""))
+
+    @last_export_dir.setter
+    def last_export_dir(self, v: str) -> None:
+        self.s.setValue("export/dir", v)
+
+    def export_options(self) -> dict:
+        return dict(naming=str(self.s.value("export/naming", "original")),
+                    by_conversation=self.s.value("export/by_conversation", False, type=bool),
+                    set_mtime=self.s.value("export/set_mtime", True, type=bool))
+
+    def save_export_options(self, naming: str, by_conversation: bool, set_mtime: bool) -> None:
+        self.s.setValue("export/naming", naming)
+        self.s.setValue("export/by_conversation", by_conversation)
+        self.s.setValue("export/set_mtime", set_mtime)
+
     def sync(self) -> None:
         self.s.sync()

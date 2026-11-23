@@ -6,8 +6,10 @@ from pathlib import Path
 
 from PySide6.QtCore import QAbstractListModel, QModelIndex, QPoint, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDialog, QHBoxLayout, QHeaderView, QLabel, QListView, QMenu, QSlider,
+    QAbstractItemView, QComboBox, QDialog, QHBoxLayout, QHeaderView, QLabel, QListView, QMenu, QPushButton,
+    QSlider,
     QStackedWidget, QTabBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
 )
 
@@ -15,7 +17,9 @@ from database.models import MediaRow
 from database.repositories import LibraryRepository, media_label
 from services.media_service import ThumbnailLoader, human_size, open_url, open_with_system, show_in_folder
 
+from .export_dialog import copy_to_folder
 from .formatting import full_datetime, month_label, plural, short_date
+from .media_gallery import ThumbnailDelegate
 from .media_viewer import ImageViewer, play_video
 
 PAGE = 200
@@ -151,9 +155,10 @@ class GalleryModel(QAbstractListModel):
 class GalleryWindow(QDialog):
     go_to_message = Signal(str, int)          # conversation, seq
 
-    def __init__(self, repo: LibraryRepository, parent=None) -> None:
+    def __init__(self, repo: LibraryRepository, parent=None, settings=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Galerie multimédia")
+        self.settings = settings
         self.setWindowFlag(Qt.WindowMaximizeButtonHint, True)
         self.repo = repo
 
@@ -195,6 +200,8 @@ class GalleryWindow(QDialog):
         self.grid.setMovement(QListView.Static)
         self.grid.setUniformItemSizes(True)
         self.grid.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.grid.setItemDelegate(ThumbnailDelegate(self.grid))
+        self.grid.setMouseTracking(True)
         self.grid.setContextMenuPolicy(Qt.CustomContextMenu)
         self.grid.customContextMenuRequested.connect(self._grid_menu)
         self.grid.doubleClicked.connect(lambda i: self.open_media(i.data(Qt.UserRole)))
@@ -205,6 +212,7 @@ class GalleryWindow(QDialog):
         self.table.setRootIsDecorated(False)
         self.table.setAlternatingRowColors(True)
         self.table.setSortingEnabled(True)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._table_menu)
         self.table.itemDoubleClicked.connect(self._table_open)
@@ -213,13 +221,25 @@ class GalleryWindow(QDialog):
         self.stack.addWidget(self.grid)
         self.stack.addWidget(self.table)
 
+        self.selection = QLabel()
+        self.copy_sel = QPushButton("Copier la sélection…")
+        self.copy_sel.setToolTip("Copier les éléments sélectionnés vers un dossier (Ctrl+Maj+C)")
+        self.copy_sel.clicked.connect(self.copy_selection)
+        self.copy_all_btn = QPushButton("Tout copier…")
+        self.copy_all_btn.setToolTip("Copier vers un dossier tous les éléments de l'onglet, filtres compris")
+        self.copy_all_btn.clicked.connect(self.copy_all)
+        QShortcut(QKeySequence("Ctrl+Shift+C"), self, self.copy_selection)
+
         status = QHBoxLayout()
         status.addWidget(self.count)
+        status.addWidget(self.selection)
         status.addStretch(1)
         status.addWidget(self.month)
-        hint = QLabel("Double-clic : ouvrir · clic droit : aller au message, dossier…")
+        hint = QLabel("Ctrl/Maj + clic : sélection multiple · double-clic : ouvrir · clic droit : actions")
         hint.setProperty("muted", True)
         status.addWidget(hint)
+        status.addWidget(self.copy_sel)
+        status.addWidget(self.copy_all_btn)
 
         lay = QVBoxLayout(self)
         lay.addWidget(self.tabs)
@@ -227,6 +247,8 @@ class GalleryWindow(QDialog):
         lay.addWidget(self.stack, 1)
         lay.addLayout(status)
 
+        self.grid.selectionModel().selectionChanged.connect(self._update_selection)
+        self.table.itemSelectionChanged.connect(self._update_selection)
         self._populate_filters()
         for c in (self.conv, self.sender, self.year, self.order):
             c.currentIndexChanged.connect(self.reload)
@@ -268,6 +290,8 @@ class GalleryWindow(QDialog):
         else:
             self.stack.setCurrentWidget(self.table)
             self._fill_table(tab, types, f)
+        self.copy_all_btn.setEnabled(TABS[tab][0] != "Liens")
+        self._update_selection()
 
     def _fill_table(self, tab: int, types: tuple, f: dict) -> None:
         self.table.clear()
@@ -316,6 +340,40 @@ class GalleryWindow(QDialog):
         self.month.setText(month_label(m.message_date[:7]).capitalize() if m and m.message_date else "")
 
     # ------------------------------------------------------------------ #
+    # Sélection et copie vers un dossier
+    # ------------------------------------------------------------------ #
+
+    def selected_medias(self) -> list[MediaRow]:
+        if self.stack.currentWidget() is self.grid:
+            rows = sorted(i.row() for i in self.grid.selectionModel().selectedIndexes())
+            return [self.model.items[r] for r in rows if r < len(self.model.items)]
+        out = []
+        for it in self.table.selectedItems():
+            data = it.data(0, Qt.UserRole)
+            if data and data[0] == "media":
+                out.append(data[1])
+        return out
+
+    def _update_selection(self) -> None:
+        n = len(self.selected_medias())
+        self.selection.setText(f"· {plural(n, 'sélectionné')}" if n else "")
+        self.copy_sel.setEnabled(n > 0)
+
+    def copy_selection(self) -> None:
+        copy_to_folder(self.selected_medias(), self, self.settings)
+
+    def all_filtered(self) -> list[MediaRow]:
+        types = TABS[self.tabs.currentIndex()][1]
+        if not types:
+            return []
+        f = self.filters()
+        total = self.repo.gallery_count(types, f["conversation_id"], f["sender"], f["year"])
+        return self.repo.gallery_page(types=types, offset=0, limit=max(total, 1), **f)
+
+    def copy_all(self) -> None:
+        copy_to_folder(self.all_filtered(), self, self.settings)
+
+    # ------------------------------------------------------------------ #
     # Actions
     # ------------------------------------------------------------------ #
 
@@ -340,6 +398,13 @@ class GalleryWindow(QDialog):
         if m.file_available:
             menu.addAction("Afficher dans le dossier", lambda: show_in_folder(m.abs_file))
             menu.addAction("Copier le chemin", lambda: QGuiApplication.clipboard().setText(str(m.abs_file)))
+        menu.addSeparator()
+        selected = self.selected_medias()
+        if len(selected) > 1:
+            menu.addAction(f"Copier les {len(selected)} éléments sélectionnés vers un dossier…", self.copy_selection)
+        else:
+            menu.addAction("Copier vers un dossier…", lambda: copy_to_folder([m], self, self.settings)).setEnabled(
+                m.file_available)
         menu.exec(global_pos)
 
     def _grid_menu(self, pos) -> None:

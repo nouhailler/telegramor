@@ -49,7 +49,7 @@ Priority: optional
 Architecture: all
 Installed-Size: $SIZE
 Depends: python3 (>= 3.11), python3-pyside6.qtcore, python3-pyside6.qtgui, python3-pyside6.qtwidgets, python3-bs4, python3-lxml
-Recommends: python3-pyside6.qtmultimedia, python3-pyside6.qtmultimediawidgets, qt6-svg-plugins
+Recommends: python3-pyside6.qtmultimedia, python3-pyside6.qtmultimediawidgets, qt6-svg-plugins, qt6-translations-l10n
 Maintainer: nouhailler <nouhailler@users.noreply.github.com>
 Homepage: https://github.com/nouhailler/telegramor
 Description: explorateur local d'exports HTML de Telegram

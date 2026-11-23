@@ -31,7 +31,7 @@ from .settings import ZOOM_STEPS, AppSettings
 from .styles import apply_theme, theme_for
 
 APP_NAME = "Telegram Archive Explorer"
-APP_VERSION = "1.0"
+APP_VERSION = "1.1"
 ICON_PATH = Path(__file__).parent / "resources" / "icon.svg"
 
 
@@ -99,6 +99,7 @@ class MainWindow(QMainWindow):
         self.message_view.zoom = self.settings.zoom
         self.message_view.internal_video = self.settings.internal_video_player
         self.info_panel = InformationPanel(self.repo)
+        self.info_panel.settings = self.settings
 
         self.center = QStackedWidget()
         self.welcome = Welcome(self.import_directory, self.import_files)
@@ -295,7 +296,7 @@ class MainWindow(QMainWindow):
         self.info_panel.tabs.setCurrentWidget(self.info_panel.timeline)
 
     def open_gallery(self) -> None:
-        win = GalleryWindow(self.repo, self)
+        win = GalleryWindow(self.repo, self, self.settings)
         if self.message_view.conv:
             win.set_conversation(self.message_view.conv.id)
         win.go_to_message.connect(self._go_to_message)
@@ -580,7 +581,9 @@ class MainWindow(QMainWindow):
 
     def show_shortcuts(self) -> None:
         rows = [("Importer un dossier d'export", "Ctrl+O"), ("Bibliothèque des archives", "Ctrl+L"),
-                ("Galerie multimédia", "Ctrl+M"), ("Statistiques", "Ctrl+Maj+S"),
+                ("Galerie multimédia", "Ctrl+M"),
+                ("Galerie : copier la sélection vers un dossier", "Ctrl+Maj+C  (Ctrl/Maj + clic pour sélectionner)"),
+                ("Statistiques", "Ctrl+Maj+S"),
                 ("Rechercher dans toutes les conversations", "Ctrl+Maj+F"),
                 ("Rechercher dans la conversation", "Ctrl+F  (Entrée / Maj+Entrée)"),
                 ("Recherche avancée", "Ctrl+Maj+A"), ("Rechercher une conversation par nom", "Ctrl+K"),
@@ -627,6 +630,13 @@ def run_gui(argv: list[str], db_path: Path | None = None) -> int:
     app.setApplicationDisplayName(APP_NAME)
     app.setDesktopFileName("telegram-archive-explorer")
     app.setWindowIcon(QIcon(str(ICON_PATH)))
+    # Boutons standard de Qt (Oui, Non, Annuler, Fermer…) en français si les
+    # traductions sont installées (paquet Debian qt6-translations-l10n)
+    from PySide6.QtCore import QLibraryInfo, QTranslator
+    tr = QTranslator(app)
+    if tr.load("qtbase_fr", QLibraryInfo.path(QLibraryInfo.TranslationsPath)) or \
+            tr.load("qtbase_fr", "/usr/share/qt6/translations"):
+        app.installTranslator(tr)
     f = app.font()
     if f.pointSizeF() < 10:
         f.setPointSizeF(10)

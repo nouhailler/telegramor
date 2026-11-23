@@ -12,7 +12,7 @@ Fonctionnement 100 % local : aucune connexion à Telegram ni à Internet.
 Téléchargez le fichier `.deb` de la [dernière version](https://github.com/nouhailler/telegramor/releases/latest), puis :
 
 ```bash
-sudo apt install ./telegram-archive-explorer_1.0.0_all.deb
+sudo apt install ./telegram-archive-explorer_1.1.0_all.deb
 ```
 
 L'application apparaît dans le menu (« Telegram Archive Explorer ») et se lance
@@ -51,6 +51,7 @@ doublon.
 | Importer un dossier / des fichiers HTML | Ctrl+O / Ctrl+Shift+O |
 | Bibliothèque des archives | Ctrl+L |
 | Galerie multimédia | Ctrl+M |
+| Galerie : copier la sélection vers un dossier | Ctrl+Maj+C |
 | Statistiques | Ctrl+Maj+S |
 | Jour précédent / suivant | Ctrl+PgPréc / Ctrl+PgSuiv (Maj : mois) |
 | Chronologie (années, mois, jours) | Ctrl+T |
@@ -71,6 +72,17 @@ doublon.
   fichiers, audio, liens de toute la bibliothèque ; filtres conversation,
   expéditeur, année, tri ; taille des miniatures réglable ; double-clic pour
   ouvrir, clic droit pour *aller au message* ou ouvrir le dossier.
+- **Copier des médias vers un dossier** : dans la galerie, sélectionnez
+  plusieurs éléments (Ctrl + clic, Maj + clic pour une plage, Ctrl+A), puis
+  *Copier la sélection…* (Ctrl+Maj+C) ; *Tout copier…* prend tous les éléments
+  de l'onglet avec les filtres en cours (par exemple toutes les photos de Zoé
+  en 2024). Dans une conversation, le clic droit sur les onglets *Médias* et
+  *Fichiers* du panneau de droite propose la même copie. Options : noms
+  d'origine ou précédés de la date du message, un sous-dossier par
+  conversation, date des fichiers copiés = date du message. Les fichiers de
+  l'export sont seulement lus ; aucun fichier existant n'est écrasé (suffixe
+  « (2) » en cas de nom déjà pris) ; les fichiers absents de l'export sont
+  ignorés et signalés.
 - **Statistiques** (Ctrl+Maj+S) : pour la bibliothèque, une conversation ou
   un expéditeur : messages, jours actifs, jour le plus actif, records de jours
   d'affilée et de silence, messages par mois (un clic ouvre le mois),
@@ -137,11 +149,11 @@ La bibliothèque est stockée dans
 .venv/bin/python -m pytest
 ```
 
-121 tests : parseur (fichier de référence réel + cas synthétiques), médias,
+129 tests : parseur (fichier de référence réel + cas synthétiques), médias,
 importation (séquentielle et parallèle, résultats identiques), base SQLite,
 bibliothèque multi-archives (doublons, fusion, renommage, déplacement,
 intégrité, migration), moteur de recherche (dont performance sur 200 000
-messages et point d'extension sémantique), statistiques, interface (rendu hors
+messages et point d'extension sémantique), statistiques, copie de médias vers un dossier, interface (rendu hors
 écran).
 
 Le fichier de référence `tests/fixtures/reference/messages.html` est une copie

@@ -6,7 +6,7 @@ from html import escape
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QFormLayout, QLabel, QListWidget, QListWidgetItem, QTabWidget, QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QFormLayout, QMenu, QLabel, QListWidget, QListWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from app.styles import sender_color
@@ -14,6 +14,7 @@ from database.models import ConversationSummary, MediaRow
 from database.repositories import FILE_MEDIA, VISUAL_MEDIA, LibraryRepository, media_label
 from services.media_service import open_url, open_with_system
 
+from .export_dialog import copy_to_folder
 from .formatting import full_datetime, period, plural, short_date
 from .media_gallery import MediaGallery
 from .timeline import Timeline
@@ -29,6 +30,7 @@ class InformationPanel(QWidget):
         self.setObjectName("SidePanel")
         self.repo = repo
         self.conv: ConversationSummary | None = None
+        self.settings = None                  # AppSettings, fourni par la fenêtre principale
         self.setMinimumWidth(300)
 
         self.avatar = QLabel(alignment=Qt.AlignCenter)
@@ -54,7 +56,11 @@ class InformationPanel(QWidget):
         self.gallery = MediaGallery()
         self.gallery.media_selected.connect(lambda m: m.message_seq is not None and self.jump_requested.emit(m.message_seq))
         self.gallery.media_activated.connect(self.open_media)
+        self.gallery.copy_requested.connect(lambda ms: copy_to_folder(ms, self, self.settings))
         self.files = QListWidget()
+        self.files.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.files.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.files.customContextMenuRequested.connect(self._files_menu)
         self.files.itemClicked.connect(self._jump_item)
         self.files.itemDoubleClicked.connect(self._open_file_item)
         self.links = QListWidget()
@@ -143,7 +149,20 @@ class InformationPanel(QWidget):
         self.tabs.setTabToolTip(3, "Années, mois et jours ; cliquer pour y aller")
         self.timeline.set_days(self.repo.days_with_messages(conv.id))
 
+    def _files_menu(self, pos) -> None:
+        selected = [it.data(Qt.UserRole + 1) for it in self.files.selectedItems()]
+        every = [self.files.item(i).data(Qt.UserRole + 1) for i in range(self.files.count())]
+        menu = QMenu(self)
+        n = len(selected)
+        label = "Copier vers un dossier…" if n <= 1 else f"Copier les {n} fichiers sélectionnés vers un dossier…"
+        menu.addAction(label, lambda: copy_to_folder(selected, self, self.settings)).setEnabled(n > 0)
+        menu.addAction("Copier tous les fichiers de la conversation…",
+                       lambda: copy_to_folder(every, self, self.settings)).setEnabled(bool(every))
+        menu.exec(self.files.viewport().mapToGlobal(pos))
+
     def _jump_item(self, it: QListWidgetItem) -> None:
+        if QApplication.keyboardModifiers() & (Qt.ControlModifier | Qt.ShiftModifier):
+            return
         seq = it.data(Qt.UserRole)
         if seq is not None:
             self.jump_requested.emit(int(seq))

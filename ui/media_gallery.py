@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
-from PySide6.QtWidgets import QListView
+from PySide6.QtCore import QAbstractListModel, QModelIndex, QPointF, QRect, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtWidgets import QAbstractItemView, QApplication, QListView, QStyle, QStyledItemDelegate
 
 from database.models import MediaRow
 from services.media_service import ThumbnailLoader
@@ -22,6 +22,60 @@ def _placeholder(text: str, missing: bool) -> QPixmap:
     p.drawText(pm.rect(), Qt.AlignCenter | Qt.TextWordWrap, text)
     p.end()
     return pm
+
+
+ACCENT = QColor("#3390ec")
+
+
+class ThumbnailDelegate(QStyledItemDelegate):
+    """Miniature carrée ; sélection bien visible (voile, cadre et coche)."""
+
+    def paint(self, p: QPainter, option, index) -> None:
+        view = self.parent()
+        size = view.iconSize()
+        r = option.rect
+        box = QRect(r.x() + (r.width() - size.width()) // 2, r.y() + (r.height() - size.height()) // 2,
+                    size.width(), size.height())
+        icon = index.data(Qt.DecorationRole)
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        if isinstance(icon, QIcon):
+            clip = QPainterPath()
+            clip.addRoundedRect(box, 4, 4)
+            p.setClipPath(clip)
+            p.drawPixmap(box, icon.pixmap(size))
+            p.setClipping(False)
+        selected = bool(option.state & QStyle.State_Selected)
+        hovered = bool(option.state & QStyle.State_MouseOver)
+        if selected:
+            veil = QColor(ACCENT)
+            veil.setAlpha(70)
+            p.fillRect(box, veil)
+            p.setPen(QPen(ACCENT, 3))
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(box.adjusted(1, 1, -2, -2), 4, 4)
+        elif hovered:
+            p.setPen(QPen(QColor(255, 255, 255, 170), 2))
+            p.drawRoundedRect(box.adjusted(1, 1, -1, -1), 4, 4)
+        if selected or hovered:
+            d = max(18, min(26, size.width() // 6))
+            c = QRect(box.right() - d - 5, box.top() + 5, d, d)
+            p.setPen(QPen(QColor("white"), 2))
+            p.setBrush(ACCENT if selected else QColor(0, 0, 0, 90))
+            p.drawEllipse(c)
+            if selected:
+                path = QPainterPath(QPointF(c.left() + d * 0.27, c.top() + d * 0.52))
+                path.lineTo(c.left() + d * 0.44, c.top() + d * 0.68)
+                path.lineTo(c.left() + d * 0.74, c.top() + d * 0.34)
+                p.setPen(QPen(QColor("white"), 2.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+                p.setBrush(Qt.NoBrush)
+                p.drawPath(path)
+        p.restore()
+
+    def sizeHint(self, option, index) -> QSize:
+        view = self.parent()
+        return view.gridSize() if view.gridSize().isValid() else view.iconSize()
 
 
 class MediaGalleryModel(QAbstractListModel):
@@ -102,6 +156,7 @@ class MediaGalleryModel(QAbstractListModel):
 class MediaGallery(QListView):
     media_activated = Signal(MediaRow)       # double-clic : ouvrir
     media_selected = Signal(MediaRow)        # clic : aller au message
+    copy_requested = Signal(list)            # clic droit : copier vers un dossier
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -114,8 +169,37 @@ class MediaGallery(QListView):
         self.setMovement(QListView.Static)
         self.setUniformItemSizes(True)
         self.setSpacing(0)
-        self.clicked.connect(lambda i: self.media_selected.emit(i.data(Qt.UserRole)))
+        self.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.setItemDelegate(ThumbnailDelegate(self))
+        self.setMouseTracking(True)
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._menu)
+        self.clicked.connect(self._clicked)
         self.doubleClicked.connect(lambda i: self.media_activated.emit(i.data(Qt.UserRole)))
+
+    def _clicked(self, index) -> None:
+        # Ctrl/Maj + clic : on construit une sélection, sans sauter au message
+        if QApplication.keyboardModifiers() & (Qt.ControlModifier | Qt.ShiftModifier):
+            return
+        self.media_selected.emit(index.data(Qt.UserRole))
+
+    def selected_medias(self) -> list[MediaRow]:
+        rows = sorted(i.row() for i in self.selectionModel().selectedIndexes())
+        return [self.model_.items[r] for r in rows if r < len(self.model_.items)]
+
+    def _menu(self, pos) -> None:
+        from PySide6.QtWidgets import QMenu
+        idx = self.indexAt(pos)
+        selected = self.selected_medias()
+        if idx.isValid() and idx.data(Qt.UserRole) not in selected:
+            selected = [idx.data(Qt.UserRole)]
+        menu = QMenu(self)
+        n = len(selected)
+        label = "Copier vers un dossier…" if n <= 1 else f"Copier les {n} médias sélectionnés vers un dossier…"
+        menu.addAction(label, lambda: self.copy_requested.emit(selected)).setEnabled(n > 0)
+        menu.addAction("Copier tous les médias de la conversation…",
+                       lambda: self.copy_requested.emit(list(self.model_.items))).setEnabled(bool(self.model_.items))
+        menu.exec(self.viewport().mapToGlobal(pos))
 
     def set_items(self, items: list[MediaRow]) -> None:
         self.model_.set_items(items)

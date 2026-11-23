@@ -424,3 +424,78 @@ def test_statistics_window(app, library, settings):
     assert not st.months.clickable and st.stats.conversations == 1
     st.close()
     w.close()
+
+
+@pytest.fixture
+def photo_library(tmp_path):
+    """Export synthétique avec de vraies images (pour la copie vers un dossier)."""
+    from PySide6.QtGui import QColor, QImage
+    d = tmp_path / "Album"
+    (d / "photos").mkdir(parents=True)
+    blocks = service(-1, "5 May 2024")
+    colors = ["#e57373", "#64b5f6", "#81c784", "#ffb74d"]
+    for i, c in enumerate(colors, start=1):
+        img = QImage(320, 240, QImage.Format_RGB32)
+        img.fill(QColor(c))
+        img.save(str(d / "photos" / f"photo_{i}@05-05-2024_10-0{i}-00.jpg"))
+        href = f"photos/photo_{i}@05-05-2024_10-0{i}-00.jpg"
+        blocks += msg(i, f'<div class="media_wrap clearfix"><a class="photo_wrap clearfix pull_left" '
+                         f'href="{href}"><img class="photo" src="{href}"/></a></div>',
+                      sender="Zoé", title=f"05.05.2024 10:0{i}:00 UTC+02:00")
+    (d / "messages.html").write_text(page(blocks, name="Album"))
+    db_path = tmp_path / "photos.sqlite"
+    with Database(db_path) as db:
+        LibraryRepository(db).save_import(import_path(d), d)
+    return db_path, d
+
+
+def test_copy_selected_photos_to_folder(app, photo_library, settings, tmp_path, monkeypatch):
+    from ui.export_dialog import ExportDialog
+    db_path, export_dir = photo_library
+    before = sorted((p.name, p.stat().st_mtime) for p in (export_dir / "photos").iterdir())
+    shown = []
+    monkeypatch.setattr(ExportDialog, "_show_result", lambda self, r: shown.append(r))
+
+    w = make_window(app, db_path, settings)
+    w.open_gallery()
+    g = w._gallery
+    pump(app)
+    assert g.model.total == 4 and not g.copy_sel.isEnabled()
+    sm = g.grid.selectionModel()
+    from PySide6.QtCore import QItemSelectionModel
+    for r in (0, 2):
+        sm.select(g.model.index(r), QItemSelectionModel.Select)
+    assert len(g.selected_medias()) == 2 and g.copy_sel.isEnabled()
+    assert "2 sélectionnés" in g.selection.text()
+
+    dest = tmp_path / "copie"
+    dlg = ExportDialog(g.selected_medias(), settings, g)
+    assert "2 fichier(s) à copier" in dlg.summary.text()
+    dlg.dest.setText(str(dest))
+    dlg.naming.setCurrentIndex(1)                    # date en tête
+    dlg._run()
+    r = shown[0]
+    assert sorted(p.name for p in dest.iterdir()) == [
+        "2024-05-05_10-02-00_photo_2@05-05-2024_10-02-00.jpg",
+        "2024-05-05_10-04-00_photo_4@05-05-2024_10-04-00.jpg"]      # plus récentes d'abord : lignes 0 et 2
+    assert len(r.copied) == 2 and not r.errors
+    assert settings.last_export_dir == str(dest) and settings.export_options()["naming"] == "date"
+    assert sorted((p.name, p.stat().st_mtime) for p in (export_dir / "photos").iterdir()) == before
+
+    # « Tout copier » : toutes les photos filtrées ; les deux déjà copiées ne sont pas écrasées
+    assert len(g.all_filtered()) == 4
+    dlg2 = ExportDialog(g.all_filtered(), settings, g)
+    assert dlg2.dest.text() == str(dest) and dlg2.naming.currentData() == "date"   # options mémorisées
+    dlg2._run()
+    assert len(list(dest.iterdir())) == 6 and shown[1].renamed == 2
+
+    # Panneau de droite : sélection multiple dans l'onglet Médias
+    gal = w.info_panel.gallery
+    from PySide6.QtWidgets import QAbstractItemView
+    assert gal.selectionMode() == QAbstractItemView.ExtendedSelection
+    got = []
+    gal.copy_requested.connect(got.append)
+    gal.selectAll()
+    assert len(gal.selected_medias()) == 4
+    g.close()
+    w.close()
