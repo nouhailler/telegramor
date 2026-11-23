@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+dist/
+build/
+# Copie d'un export Telegram réel : jamais publiée
+tests/fixtures/reference/messages.html
