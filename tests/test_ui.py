@@ -75,12 +75,12 @@ def test_conversation_display(app, library, settings):
     w = make_window(app, library, settings)
     mv = w.message_view
     assert w.conv_list.model.rowCount() == 1
-    assert mv.conv.name == "faycal"
+    assert mv.conv.name == "fabien"
     assert len(mv.rows) == 40
     pills = [r for r in mv.rows if isinstance(r, PillRow)]
     bubbles = [r for r in mv.rows if isinstance(r, MessageBubbleRow)]
     assert (len(pills), len(bubbles)) == (8, 32)
-    assert mv.owner == "patrick"                       # détecté via les réactions
+    assert mv.owner == "pierre"                       # détecté via les réactions
     out = [r for r in bubbles if r.bubble.property("outgoing")]
     assert len(out) == 16
     # ouverture sur le dernier message
@@ -245,7 +245,7 @@ def two_conversations(tmp_path, library):
 
 def test_global_search_opens_result_in_context(app, two_conversations, settings):
     w = make_window(app, two_conversations, settings)
-    w.conv_list.select(next(c.id for c in w.repo.list_conversations() if c.name == "faycal"))
+    w.conv_list.select(next(c.id for c in w.repo.list_conversations() if c.name == "fabien"))
     pump(app)
     w.search("cafe")
     pump(app)
@@ -253,7 +253,7 @@ def test_global_search_opens_result_in_context(app, two_conversations, settings)
     assert w.left.currentWidget() is panel
     assert panel.model.total == 2
     names = {panel.model.hits[i].conversation_name for i in range(2)}
-    assert names == {"faycal", "Voyages"}
+    assert names == {"fabien", "Voyages"}
     # clic sur le résultat de l'autre conversation : elle s'ouvre sur le message, surligné
     row = next(i for i, h in enumerate(panel.model.hits) if h.conversation_name == "Voyages")
     panel.view.setCurrentIndex(panel.model.index(row))
@@ -397,7 +397,7 @@ def test_gallery_window(app, library, settings):
     g.tabs.setCurrentIndex(5)
     assert g.table.topLevelItemCount() == 1                     # lien
     g.tabs.setCurrentIndex(0)
-    g.sender.setCurrentIndex(g.sender.findData("robert"))
+    g.sender.setCurrentIndex(g.sender.findData("remi"))
     assert g.model.total == 0
     g.sender.setCurrentIndex(0)
     m = g.model.items[0]

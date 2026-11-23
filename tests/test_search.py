@@ -70,7 +70,7 @@ def test_global_search_across_archives(lib):
     assert "<mark>vacances</mark>" in h.snippet_html and "<mark>Italie</mark>" in h.snippet_html
     assert h.date_local.startswith("2023-08-03T09:00:00")
     # les deux conversations sont interrogées ensemble
-    assert {x.conversation_name for x in eng.search(SearchQuery("super")).hits} == {"faycal"}
+    assert {x.conversation_name for x in eng.search(SearchQuery("super")).hits} == {"fabien"}
     assert eng.search(SearchQuery("italie")).total == 2
 
 
@@ -95,7 +95,7 @@ def test_filters(lib):
     voyages = next(c.id for c in repo.list_conversations() if c.name == "Voyages")
     assert eng.search(SearchQuery("vacances", conversation_ids=[voyages])).total == 2
     assert ids(eng.search(SearchQuery("vacances", sender="Marc"))) == [4]
-    assert ids(eng.search(SearchQuery("", sender="robert", date_from="2026-07-06", date_to="2026-07-06",
+    assert ids(eng.search(SearchQuery("", sender="remi", date_from="2026-07-06", date_to="2026-07-06",
                                       sort=SORT_OLDEST))) == [191563, 191564, 191565, 191566, 191569,
                                                                191583, 191621]
     assert ids(eng.search(SearchQuery(content_type="photo", sort=SORT_OLDEST))) == [186728, 188184]

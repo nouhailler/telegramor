@@ -2,7 +2,7 @@
 
 ## 1. Analyse de la structure du fichier de référence
 
-Fichier : `ChatExport_2026-11-23/messages.html` (19 Ko, conversation « faycal »).
+Fichier : `ChatExport_2026-11-23/messages.html` (19 Ko, conversation « fabien »).
 
 | Élément | Sélecteur réel | Occurrences |
 |---|---|---|
@@ -33,10 +33,10 @@ Points notables :
 - **Médias** : la miniature de la vidéo pointe vers `video_files/jean.mp4_thumb.jpg`
   alors que le fichier présent est `jenseng.mp4_thumb.jpg`. Conformément au
   cahier des charges, le chemin n'est **pas** corrigé : il est signalé manquant.
-- **Expéditeurs** : « robert » porte l'avatar « f » / `userpic4` de « faycal ».
+- **Expéditeurs** : « remi » porte l'avatar « f » / `userpic4` de « fabien ».
   C'est probablement un effet de l'anonymisation ; le parseur garde le nom
   affiché et signale l'incohérence (`INITIALS_MISMATCH`, niveau info).
-- Certains noms ont une espace finale (`faycal `), d'autres non (`robert`) :
+- Certains noms ont une espace finale (`fabien `), d'autres non (`remi`) :
   noms normalisés (espaces réduites).
 
 ## 2. Classes de données (`importer/models.py`)

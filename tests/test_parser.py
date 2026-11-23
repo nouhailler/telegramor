@@ -31,7 +31,7 @@ class TestReferenceFile:
         return {m.html_id: m for m in res.messages}
 
     def test_conversation_name(self, res):
-        assert res.conversation_name == "faycal"
+        assert res.conversation_name == "fabien"
 
     def test_all_blocks_extracted(self, res):
         assert res.raw_block_count == 40
@@ -63,14 +63,14 @@ class TestReferenceFile:
 
     def test_joined_inherit_sender(self, res):
         expected = {
-            "message185996": "faycal",
-            "message189180": "robert",
-            "message189182": "patrick",
-            "message189187": "patrick",
-            "message189188": "patrick",
-            "message191564": "robert",
-            "message191565": "robert",
-            "message191566": "robert",
+            "message185996": "fabien",
+            "message189180": "remi",
+            "message189182": "pierre",
+            "message189187": "pierre",
+            "message189188": "pierre",
+            "message191564": "remi",
+            "message191565": "remi",
+            "message191566": "remi",
         }
         joined = {m.html_id: m.sender for m in res.messages if m.is_joined}
         assert joined == expected
@@ -78,7 +78,7 @@ class TestReferenceFile:
         assert not any(m.sender_inherited for m in res.messages if not m.is_joined)
 
     def test_sender_name_trimmed(self, res):
-        assert {m.sender for m in res.messages if m.sender} == {"faycal", "patrick", "robert"}
+        assert {m.sender for m in res.messages if m.sender} == {"fabien", "pierre", "remi"}
 
     def test_date_parsing(self, res):
         m = self.by_id(res)["message185995"]
@@ -111,7 +111,7 @@ class TestReferenceFile:
         reacted = [m for m in res.messages if m.reactions]
         assert [m.html_id for m in reacted] == ["message189180", "message191569"]
         r = reacted[0].reactions[0]
-        assert (r.emoji, r.count, r.users, r.active) == ("👍", 1, ["patrick"], True)
+        assert (r.emoji, r.count, r.users, r.active) == ("👍", 1, ["pierre"], True)
 
     def test_photos(self, res):
         d = self.by_id(res)

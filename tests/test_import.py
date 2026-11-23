@@ -17,7 +17,7 @@ def test_reference_report(tmp_path):
     assert r.is_complete
     assert (r.blocks_detected, r.blocks_parsed) == (40, 40)
     assert (r.messages_default, r.messages_joined, r.date_separators, r.messages_service) == (32, 8, 8, 0)
-    assert sorted(r.senders) == ["faycal", "patrick", "robert"]
+    assert sorted(r.senders) == ["fabien", "pierre", "remi"]
     assert (r.replies, r.replies_resolved) == (1, 1)
     assert (r.reactions_total, r.messages_with_reactions) == (2, 2)
     assert (r.photos, r.videos, r.audio_files) == (2, 1, 0)

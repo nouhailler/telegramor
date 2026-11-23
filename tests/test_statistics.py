@@ -33,7 +33,7 @@ def test_reference_statistics(db):
     assert st.busiest_day == ("2026-03-22", 12)
     assert st.longest_streak == (2, "2026-01-10", "2026-01-11")
     assert st.longest_silence == (128, "2026-07-07", "2026-11-11")
-    assert st.per_sender == [("patrick", 16), ("robert", 10), ("faycal", 6)]
+    assert st.per_sender == [("pierre", 16), ("remi", 10), ("fabien", 6)]
     assert sum(st.per_hour) == 32 and st.per_hour[16] == 9
     assert sum(st.per_weekday) == 32 and st.per_weekday[6] == 14        # dimanche 22 mars
     assert sum(map(sum, st.heatmap)) == 32
@@ -46,8 +46,8 @@ def test_reference_statistics(db):
 
 
 def test_statistics_filtered_by_sender(db):
-    st = compute(db, sender="robert")
-    assert st.messages == 10 and st.per_sender == [("robert", 10)]
+    st = compute(db, sender="remi")
+    assert st.messages == 10 and st.per_sender == [("remi", 10)]
     assert compute(db, conversation_id="inexistante").messages == 0
 
 

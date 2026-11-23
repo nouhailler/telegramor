@@ -54,13 +54,13 @@ def test_save_and_list(repo, export_dir):
     convs = repo.list_conversations()
     assert len(convs) == 1
     c = convs[0]
-    assert (c.name, c.message_count, c.media_count) == ("faycal", 32, 3)
-    assert c.last_preview == "bonne matinées 🤔" and c.last_sender == "patrick"
+    assert (c.name, c.message_count, c.media_count) == ("fabien", 32, 3)
+    assert c.last_preview == "bonne matinées 🤔" and c.last_sender == "pierre"
     assert c.archives == ["ChatExport"]
     assert repo.library_stats() == {"archives": 1, "conversations": 1, "messages": 32, "duplicates": 0,
                                     "medias": 3}
     names = {p.name: p.message_count for p in repo.participants(c.id)}
-    assert names == {"patrick": 16, "robert": 10, "faycal": 6}
+    assert names == {"pierre": 16, "remi": 10, "fabien": 6}
 
 
 def test_reimport_does_not_duplicate(repo, export_dir):
@@ -97,9 +97,9 @@ def test_message_hydration(repo, export_dir):
     seq = repo.seq_of_message(cid, 189181)
     m = repo.message_by_seq(cid, seq)
     assert m.reply is not None and m.reply.message_id == 189180
-    assert m.reply.sender == "robert" and m.reply.seq == repo.seq_of_message(cid, 189180)
+    assert m.reply.sender == "remi" and m.reply.seq == repo.seq_of_message(cid, 189180)
     target = repo.message_by_seq(cid, m.reply.seq)
-    assert target.reactions[0].emoji == "👍" and target.reactions[0].users == ["patrick"]
+    assert target.reactions[0].emoji == "👍" and target.reactions[0].users == ["pierre"]
     first = repo.message_by_seq(cid, repo.seq_of_message(cid, 185995))
     assert len(first.links) == 1 and first.links[0].startswith("https://youtu.be/")
 
@@ -112,7 +112,7 @@ def test_media_paths_resolved(repo, export_dir):
     assert photos[0].abs_file == (export_dir / "photos/photo_1@10-01-2026_20-28-43.jpg").resolve()
     assert photos[0].file_available and not photos[0].thumbnail_available
     assert not photos[1].file_available
-    assert photos[0].message_sender == "patrick"
+    assert photos[0].message_sender == "pierre"
     # Archive déplacée : seule la racine change, les chemins restent relatifs
     stored = repo.conn.execute("SELECT file_path FROM medias WHERE media_type='photo' LIMIT 1").fetchone()[0]
     assert stored == "photos/photo_1@10-01-2026_20-28-43.jpg"
@@ -135,7 +135,7 @@ def test_date_navigation(repo, export_dir):
 
 def test_owner_detection(repo, export_dir):
     load(repo, export_dir)
-    assert repo.detect_owner() == "patrick"
+    assert repo.detect_owner() == "pierre"
 
 
 def test_fts_ready(repo, export_dir):

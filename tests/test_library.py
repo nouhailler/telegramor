@@ -251,7 +251,7 @@ def test_migration_from_v1_and_hash_backfill(tmp_path):
     conn.execute("PRAGMA user_version = 1")
     conn.execute("INSERT INTO archives (id, source_path, root_path, name, imported_at) VALUES (1, ?, ?, 'ChatExport', 'x')",
                  (str(d), str(d)))
-    conn.execute("INSERT INTO conversations (id, name) VALUES ('c', 'faycal')")
+    conn.execute("INSERT INTO conversations (id, name) VALUES ('c', 'fabien')")
     conn.execute("INSERT INTO conversation_sources VALUES ('c', 1, '.', '[\"messages.html\"]')")
     conn.execute("INSERT INTO messages (conversation_id, archive_id, seq, message_id, html_id, source_file, kind, text)"
                  " VALUES ('c', 1, 7, 1, 'message1', 'messages.html', 'default', 'bonjour')")
