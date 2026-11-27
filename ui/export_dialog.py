@@ -7,12 +7,14 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout,
+    QApplication, QCheckBox, QFrame, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout,
     QLabel, QLineEdit, QMessageBox, QProgressDialog, QPushButton, QVBoxLayout, QWidget,
 )
 
+from app import design, icons
 from app.settings import AppSettings
 from database.models import MediaRow
+from ui.components import dialog_header
 from ui.formatting import plural
 from services.media_export import (
     NAMING_DATE, NAMING_ORIGINAL, ExportOptions, ExportResult, execute, plan_copies, summary_text, total_size,
@@ -43,7 +45,7 @@ class ExportDialog(QDialog):
                            for k, n in kinds.most_common())
         text = f"<b>{len(unique)} fichier(s) à copier</b> ({human_size(size)})"
         if detail:
-            text += f"<br><span style='color:gray'>{detail}</span>"
+            text += f"<br><span style='color:{design.current().muted}'>{detail}</span>"
         missing = len(medias) - len(available)
         if missing:
             text += f"<br>⚠ {missing} élément(s) ignoré(s) : fichier absent de l'export."
@@ -82,16 +84,26 @@ class ExportDialog(QDialog):
         buttons = QDialogButtonBox()
         buttons.addButton("Annuler", QDialogButtonBox.RejectRole)
         self.ok = buttons.addButton("Copier", QDialogButtonBox.AcceptRole)
+        self.ok.setProperty("variant", "primary")
+        icons.bind(self.ok, "copy", "surface", 16, "surface", "surface")
         self.ok.setEnabled(bool(available))
         buttons.accepted.connect(self._run)
         buttons.rejected.connect(self.reject)
 
         lay = QVBoxLayout(self)
-        lay.addWidget(self.summary)
+        lay.setContentsMargins(22, 20, 22, 16)
+        lay.setSpacing(12)
+        lay.addWidget(dialog_header("Copier vers un dossier", "", "copy"))
+        summary_card = QFrame()
+        summary_card.setObjectName("StatTile")
+        sl = QVBoxLayout(summary_card)
+        sl.setContentsMargins(14, 10, 14, 10)
+        sl.addWidget(self.summary)
+        lay.addWidget(summary_card)
         lay.addLayout(form)
         lay.addWidget(note)
         lay.addWidget(buttons)
-        self.resize(620, self.sizeHint().height())
+        self.resize(660, self.sizeHint().height())
 
     def options(self) -> ExportOptions:
         return ExportOptions(self.naming.currentData(), self.by_conv.isChecked(), self.set_mtime.isChecked())

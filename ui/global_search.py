@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QAbstractListModel, QModelIndex, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QAbstractTextDocumentLayout, QColor, QFont, QFontMetrics, QPalette, QTextDocument
+from PySide6.QtGui import (
+    QAbstractTextDocumentLayout, QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPalette, QTextDocument,
+)
 from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QListView, QScrollArea, QStyle, QStyledItemDelegate, QStyleOptionViewItem,
     QToolButton, QVBoxLayout, QWidget,
 )
 
-from app.styles import Theme, sender_color
+from app import design, icons
+from app.design import name_color
+from app.styles import Theme
 from database.repositories import media_label
 from database.search_engine import SearchEngine, SearchError, SearchHit, SearchQuery
 
@@ -83,7 +87,7 @@ def _type_label(h: SearchHit) -> str:
         return "Événement"
     if h.media_types:
         return ", ".join(dict.fromkeys(media_label(t) or t for t in h.media_types))
-    return "🔗 Lien" if h.has_link else "Texte"
+    return "Lien" if h.has_link else "Texte"
 
 
 class SearchResultDelegate(QStyledItemDelegate):
@@ -93,24 +97,37 @@ class SearchResultDelegate(QStyledItemDelegate):
 
     def sizeHint(self, option, index) -> QSize:  # noqa: N802
         fm = QFontMetrics(option.font)
-        return QSize(200, fm.height() * 4 + 22)
+        return QSize(200, fm.height() * 4 + 30)
 
     def paint(self, p, option: QStyleOptionViewItem, index: QModelIndex) -> None:
         h: SearchHit = index.data(ROLE_HIT)
         p.save()
+        th = design.current()
         r = option.rect
         pal = option.palette
         selected = bool(option.state & QStyle.State_Selected)
+        hovered = bool(option.state & QStyle.State_MouseOver)
+        p.setRenderHint(QPainter.Antialiasing)
+        card = QRectF(r.adjusted(8, 3, -8, -3))
+        path = QPainterPath()
+        path.addRoundedRect(card, 10, 10)
         if selected:
-            p.fillRect(r, pal.color(QPalette.Highlight))
-        elif option.state & QStyle.State_MouseOver:
-            p.fillRect(r, pal.color(QPalette.AlternateBase))
-        fg = QColor("white") if selected else pal.color(QPalette.Text)
-        muted = QColor(255, 255, 255, 210) if selected else pal.color(QPalette.PlaceholderText)
+            p.fillPath(path, QColor(th.accent_soft))
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(th.accent))
+            p.drawRoundedRect(QRectF(card.left(), card.top() + 12, 3, card.height() - 24), 1.5, 1.5)
+        elif hovered:
+            p.fillPath(path, QColor(th.hover))
+        else:
+            p.setPen(QColor(th.border))
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(card.adjusted(0.5, 0.5, -0.5, -0.5), 10, 10)
+        fg = QColor(th.text)
+        muted = QColor(th.muted)
         fm = QFontMetrics(option.font)
         lh = fm.height()
-        x, right = r.left() + 10, r.right() - 10
-        y = r.top() + 6
+        x, right = int(card.left()) + 14, int(card.right()) - 12
+        y = int(card.top()) + 8
 
         # Ligne 1 : conversation + date
         bold = QFont(option.font)
@@ -131,7 +148,7 @@ class SearchResultDelegate(QStyledItemDelegate):
         # Ligne 2 : expéditeur · type · archive
         p.setFont(small)
         sender = h.sender or "—"
-        p.setPen(QColor("white") if selected else QColor(sender_color(None, h.sender)))
+        p.setPen(QColor(name_color(None, h.sender, th)))
         sw = QFontMetrics(small).horizontalAdvance(sender)
         p.drawText(x, y, sw, lh, Qt.AlignLeft | Qt.AlignVCenter, sender)
         p.setPen(muted)
@@ -144,8 +161,8 @@ class SearchResultDelegate(QStyledItemDelegate):
         doc = QTextDocument()
         doc.setDefaultFont(option.font)
         doc.setDocumentMargin(0)
-        mark_bg = "rgba(255,255,255,0.35)" if selected else self.theme.highlight
-        color = "white" if selected else self.theme.text
+        mark_bg = th.highlight
+        color = th.text
         doc.setDefaultStyleSheet(f"body {{ color: {color}; }} mark {{ background-color: {mark_bg}; color: {color}; }}")
         doc.setHtml(f"<body>{h.snippet_html.replace(chr(10), ' ')}</body>")
         doc.setTextWidth(right - x)
@@ -156,11 +173,6 @@ class SearchResultDelegate(QStyledItemDelegate):
         ctx.clip = clip
         ctx.palette.setColor(QPalette.Text, fg)
         doc.documentLayout().draw(p, ctx)
-        p.restore()
-        # séparateur
-        p.save()
-        p.setPen(pal.color(QPalette.AlternateBase))
-        p.drawLine(r.left() + 10, r.bottom(), r.right() - 10, r.bottom())
         p.restore()
 
 
@@ -173,16 +185,23 @@ class GlobalSearchPanel(QWidget):
     def __init__(self, engine: SearchEngine, theme: Theme, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("SidePanel")
-        self.setMinimumWidth(280)
+        self.setMinimumWidth(design.CONV_LIST_MIN)
         self.engine = engine
         self.text = ""
 
-        title = QLabel("<b>Résultats</b>")
-        self.filters_btn = QToolButton(text="Filtres ▾", toolTip="Afficher les filtres de recherche avancée")
+        title = QLabel("Résultats")
+        title.setProperty("role", "section")
+        self.filters_btn = QToolButton(text="Filtres", toolTip="Afficher les filtres de recherche avancée")
         self.filters_btn.setCheckable(True)
-        close = QToolButton(text="✕", toolTip="Fermer la recherche (Échap)")
+        self.filters_btn.setProperty("variant", "secondary")
+        self.filters_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        icons.bind(self.filters_btn, "filters", "muted", 16)
+        close = QToolButton(toolTip="Fermer la recherche (Échap)")
+        close.setAccessibleName("Fermer la recherche")
+        icons.bind(close, "close", "muted", 16)
         close.clicked.connect(self.closed)
         head = QHBoxLayout()
+        head.setContentsMargins(14, 0, 10, 0)
         head.addWidget(title, 1)
         head.addWidget(self.filters_btn)
         head.addWidget(close)
@@ -192,14 +211,15 @@ class GlobalSearchPanel(QWidget):
         self.filters_area.setWidget(self.filters)
         self.filters_area.setWidgetResizable(True)
         self.filters_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.filters_area.setMaximumHeight(430)
+        self.filters_area.setMaximumHeight(500)
         self.filters_area.setVisible(False)
         self.filters_btn.toggled.connect(self.filters_area.setVisible)
         self.filters.changed.connect(self._schedule)
 
         self.status = QLabel()
-        self.status.setProperty("muted", True)
+        self.status.setProperty("role", "caption")
         self.status.setWordWrap(True)
+        self.status.setContentsMargins(14, 0, 14, 0)
 
         self.model = SearchResultsModel(engine)
         self.model.error.connect(lambda e: self.status.setText(f"Recherche impossible : {e}"))
@@ -216,7 +236,8 @@ class GlobalSearchPanel(QWidget):
         self._timer = QTimer(self, singleShot=True, interval=300, timeout=self.run)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(8, 8, 0, 4)
+        lay.setContentsMargins(0, 12, 0, 6)
+        lay.setSpacing(8)
         lay.addLayout(head)
         lay.addWidget(self.filters_area)
         lay.addWidget(self.status)
@@ -235,7 +256,7 @@ class GlobalSearchPanel(QWidget):
 
     def _schedule(self) -> None:
         n = self.filters.active_count()
-        self.filters_btn.setText(f"Filtres ({n}) ▾" if n else "Filtres ▾")
+        self.filters_btn.setText(f"Filtres ({n})" if n else "Filtres")
         self._timer.start()
 
     def current_query(self) -> SearchQuery:

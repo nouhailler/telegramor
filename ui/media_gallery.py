@@ -2,36 +2,95 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, QPointF, QRect, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtCore import QAbstractListModel, QModelIndex, QPointF, QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QAbstractItemView, QApplication, QListView, QStyle, QStyledItemDelegate
 
+from app import design, icons
 from database.models import MediaRow
 from services.media_service import ThumbnailLoader
 
-from .formatting import full_datetime
+from .formatting import full_datetime, short_date
 
 THUMB = QSize(96, 96)
 
+TYPE_LABELS = {"video": "Vidéo", "animation": "GIF", "video_message": "Vidéo", "sticker": "Autocollant",
+               "photo": "Photo"}
 
-def _placeholder(text: str, missing: bool) -> QPixmap:
-    pm = QPixmap(THUMB)
-    pm.fill(QColor("#3b4a59") if not missing else QColor("#5c2b29"))
+
+def thumb_placeholder(m: MediaRow, size: QSize, loading: bool = False) -> QPixmap:
+    """Vignette d'attente ou de fichier absent : pictogramme du type, fond du thème."""
+    t = design.current()
+    missing = not m.file_available and not loading and not m.not_included
+    ratio = 2
+    pm = QPixmap(size * ratio)
+    pm.setDevicePixelRatio(ratio)
+    pm.fill(QColor(t.danger_soft if missing else t.panel))
     p = QPainter(pm)
-    p.setPen(QColor("white"))
-    p.drawText(pm.rect(), Qt.AlignCenter | Qt.TextWordWrap, text)
+    p.setRenderHint(QPainter.Antialiasing)
+    ic = max(18, min(34, size.width() // 4))
+    name = "alert" if missing else icons.MEDIA_ICONS.get(m.media_type, "image")
+    color = t.danger if missing else (t.faint if loading else t.muted)
+    y = size.height() // 2 - ic + (0 if size.height() > 70 else 6)
+    p.drawPixmap((size.width() - ic) // 2, y, icons.pixmap(name, color, ic))
+    if not loading and size.height() > 70:
+        f = p.font()
+        f.setPointSizeF(8)
+        p.setFont(f)
+        p.setPen(QColor(color))
+        label = "Introuvable" if missing else ("Non inclus" if m.not_included else TYPE_LABELS.get(m.media_type, ""))
+        p.drawText(QRect(4, size.height() // 2 + 4, size.width() - 8, 20), Qt.AlignCenter, label)
     p.end()
     return pm
 
 
-ACCENT = QColor("#3390ec")
+def thumb_decorate(pm: QPixmap, m: MediaRow, size: QSize) -> QPixmap:
+    """Recadrage carré centré, badge de type (vidéo, GIF) ou d'absence en haut à gauche."""
+    side = min(pm.width(), pm.height())
+    sq = pm.copy((pm.width() - side) // 2, (pm.height() - side) // 2, side, side).scaled(
+        size * 2, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+    sq.setDevicePixelRatio(2)
+    badge = None
+    if m.media_type in ("video", "video_message"):
+        badge = ("play", m.duration_raw or "")
+    elif m.media_type == "animation":
+        badge = (None, "GIF")
+    if not m.file_available and not m.not_included:
+        badge = ("alert", "absent")
+    if badge:
+        p = QPainter(sq)
+        p.setRenderHint(QPainter.Antialiasing)
+        f = p.font()
+        f.setPointSizeF(7.6)
+        f.setBold(True)
+        p.setFont(f)
+        icon_name, text = badge
+        tw = p.fontMetrics().horizontalAdvance(text) if text else 0
+        w = 10 + (12 if icon_name else 0) + (tw + (4 if icon_name and text else 0)) + 4
+        r = QRect(6, 6, max(w, 22), 20)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(10, 16, 28, 170))
+        p.drawRoundedRect(r, 10, 10)
+        x = r.left() + 7
+        warn = icon_name == "alert"
+        if icon_name:
+            p.drawPixmap(x, r.top() + 4, icons.pixmap(icon_name, "#FF9A94" if warn else "#FFFFFF", 12))
+            x += 15
+        if text:
+            p.setPen(QColor("#FF9A94") if warn else QColor("white"))
+            p.drawText(QRect(x, r.top(), tw + 2, r.height()), Qt.AlignVCenter | Qt.AlignLeft, text)
+        p.end()
+    return sq
 
 
 class ThumbnailDelegate(QStyledItemDelegate):
-    """Miniature carrée ; sélection bien visible (voile, cadre et coche)."""
+    """Miniature carrée arrondie ; survol (date, expéditeur) et sélection bien visibles."""
+
+    RADIUS = 10
 
     def paint(self, p: QPainter, option, index) -> None:
         view = self.parent()
+        t = design.current()
         size = view.iconSize()
         r = option.rect
         box = QRect(r.x() + (r.width() - size.width()) // 2, r.y() + (r.height() - size.height()) // 2,
@@ -40,29 +99,47 @@ class ThumbnailDelegate(QStyledItemDelegate):
         p.save()
         p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
+        clip = QPainterPath()
+        clip.addRoundedRect(QRectF(box), self.RADIUS, self.RADIUS)
+        p.setClipPath(clip)
         if isinstance(icon, QIcon):
-            clip = QPainterPath()
-            clip.addRoundedRect(box, 4, 4)
-            p.setClipPath(clip)
             p.drawPixmap(box, icon.pixmap(size))
-            p.setClipping(False)
         selected = bool(option.state & QStyle.State_Selected)
         hovered = bool(option.state & QStyle.State_MouseOver)
+        m = index.data(Qt.UserRole)
+        if hovered and m is not None and box.height() >= 90:
+            grad = QLinearGradient(0, box.bottom() - 46, 0, box.bottom())
+            grad.setColorAt(0, QColor(10, 16, 28, 0))
+            grad.setColorAt(1, QColor(10, 16, 28, 190))
+            p.fillRect(QRect(box.left(), box.bottom() - 46, box.width(), 47), grad)
+            f = QFont(option.font)
+            f.setPointSizeF(max(7.5, option.font.pointSizeF() * 0.8))
+            p.setFont(f)
+            p.setPen(QColor("white"))
+            info = " · ".join(x for x in (short_date(m.message_date), m.message_sender or "") if x)
+            p.drawText(box.adjusted(8, 0, -8, -6), Qt.AlignBottom | Qt.AlignLeft,
+                       p.fontMetrics().elidedText(info, Qt.ElideRight, box.width() - 16))
         if selected:
-            veil = QColor(ACCENT)
-            veil.setAlpha(70)
+            veil = QColor(t.accent)
+            veil.setAlpha(60)
             p.fillRect(box, veil)
-            p.setPen(QPen(ACCENT, 3))
+        p.setClipping(False)
+        if selected:
+            p.setPen(QPen(QColor(t.accent), 3))
             p.setBrush(Qt.NoBrush)
-            p.drawRoundedRect(box.adjusted(1, 1, -2, -2), 4, 4)
+            p.drawRoundedRect(QRectF(box).adjusted(1.5, 1.5, -1.5, -1.5), self.RADIUS - 1, self.RADIUS - 1)
         elif hovered:
-            p.setPen(QPen(QColor(255, 255, 255, 170), 2))
-            p.drawRoundedRect(box.adjusted(1, 1, -1, -1), 4, 4)
+            p.setPen(QPen(QColor(t.accent), 1.5))
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(QRectF(box).adjusted(0.75, 0.75, -0.75, -0.75), self.RADIUS, self.RADIUS)
+        if option.state & QStyle.State_HasFocus and not selected and view.hasFocus():
+            p.setPen(QPen(QColor(t.accent), 1, Qt.DashLine))
+            p.drawRoundedRect(QRectF(box).adjusted(1, 1, -1, -1), self.RADIUS, self.RADIUS)
         if selected or hovered:
-            d = max(18, min(26, size.width() // 6))
-            c = QRect(box.right() - d - 5, box.top() + 5, d, d)
+            d = max(18, min(24, size.width() // 6))
+            c = QRect(box.right() - d - 6, box.top() + 6, d, d)
             p.setPen(QPen(QColor("white"), 2))
-            p.setBrush(ACCENT if selected else QColor(0, 0, 0, 90))
+            p.setBrush(QColor(t.accent) if selected else QColor(10, 16, 28, 90))
             p.drawEllipse(c)
             if selected:
                 path = QPainterPath(QPointF(c.left() + d * 0.27, c.top() + d * 0.52))
@@ -84,7 +161,16 @@ class MediaGalleryModel(QAbstractListModel):
         self.items: list[MediaRow] = []
         self._keys: dict[str, int] = {}
         self._icons: dict[int, QIcon] = {}
+        self.size = QSize(THUMB)
         ThumbnailLoader.instance().loaded.connect(self._on_loaded)
+
+    def set_size(self, size: QSize) -> None:
+        if size != self.size:
+            self.beginResetModel()
+            self.size = QSize(size)
+            self._icons.clear()
+            self._keys.clear()
+            self.endResetModel()
 
     def set_items(self, items: list[MediaRow]) -> None:
         self.beginResetModel()
@@ -112,43 +198,26 @@ class MediaGalleryModel(QAbstractListModel):
     def _icon(self, row: int, m: MediaRow) -> QIcon:
         if row in self._icons:
             return self._icons[row]
-        src = m.abs_thumbnail if m.thumbnail_available else (m.abs_file if m.file_available and m.media_type == "photo" else None)
-        label = {"video": "▶ Vidéo", "animation": "GIF", "video_message": "▶", "sticker": "Autocollant"}.get(m.media_type, "Photo")
+        src = m.abs_thumbnail if m.thumbnail_available else (
+            m.abs_file if m.file_available and m.media_type in ("photo", "sticker") else None)
         if src is None:
-            icon = QIcon(_placeholder(label + "\nintrouvable" if not m.file_available else label, not m.file_available))
+            icon = QIcon(thumb_placeholder(m, self.size))
             self._icons[row] = icon
             return icon
-        key, pm = ThumbnailLoader.instance().request(src, THUMB * 2)
+        key, pm = ThumbnailLoader.instance().request(src, self.size * 2)
         if pm is not None:
-            icon = QIcon(self._decorate(pm, m))
+            icon = QIcon(thumb_decorate(pm, m, self.size))
             self._icons[row] = icon
             return icon
         self._keys[key] = row
-        return QIcon(_placeholder("…", False))
-
-    def _decorate(self, pm: QPixmap, m: MediaRow) -> QPixmap:
-        # Recadrage carré centré + pictogramme pour les vidéos
-        side = min(pm.width(), pm.height())
-        sq = pm.copy((pm.width() - side) // 2, (pm.height() - side) // 2, side, side).scaled(
-            THUMB, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-        if m.media_type in ("video", "animation", "video_message") or not m.file_available:
-            p = QPainter(sq)
-            p.setRenderHint(QPainter.Antialiasing)
-            p.setBrush(QColor(0, 0, 0, 150))
-            p.setPen(Qt.NoPen)
-            p.drawRoundedRect(4, THUMB.height() - 22, 40 if m.file_available else 70, 18, 5, 5)
-            p.setPen(QColor("white") if m.file_available else QColor("#ff8a80"))
-            p.drawText(8, THUMB.height() - 9, "▶" if m.file_available and m.media_type != "animation"
-                       else ("GIF" if m.file_available else "⚠ absent"))
-            p.end()
-        return sq
+        return QIcon(thumb_placeholder(m, self.size, loading=True))
 
     def _on_loaded(self, key: str, pm: QPixmap) -> None:
         row = self._keys.pop(key, None)
         if row is None or row >= len(self.items):
             return
         m = self.items[row]
-        self._icons[row] = QIcon(self._decorate(pm, m)) if not pm.isNull() else QIcon(_placeholder("illisible", True))
+        self._icons[row] = QIcon(thumb_decorate(pm, m, self.size) if not pm.isNull() else thumb_placeholder(m, self.size))
         idx = self.index(row)
         self.dataChanged.emit(idx, idx, [Qt.DecorationRole])
 
@@ -164,7 +233,7 @@ class MediaGallery(QListView):
         self.setModel(self.model_)
         self.setViewMode(QListView.IconMode)
         self.setIconSize(THUMB)
-        self.setGridSize(THUMB + QSize(6, 6))
+        self.setGridSize(THUMB + QSize(8, 8))
         self.setResizeMode(QListView.Adjust)
         self.setMovement(QListView.Static)
         self.setUniformItemSizes(True)
@@ -203,3 +272,16 @@ class MediaGallery(QListView):
 
     def set_items(self, items: list[MediaRow]) -> None:
         self.model_.set_items(items)
+
+    def resizeEvent(self, e) -> None:  # noqa: N802
+        super().resizeEvent(e)
+        # 3 colonnes (ou plus) qui occupent toute la largeur du panneau
+        # largeur utile en réservant la barre de défilement (qui peut apparaître ensuite)
+        w = self.width() - self.verticalScrollBar().sizeHint().width() - 8
+        cols = max(3, w // 120)
+        side = max(56, (w - cols * 8) // cols - 1)
+        size = QSize(side, side)
+        if size != self.iconSize():
+            self.setIconSize(size)
+            self.setGridSize(size + QSize(8, 8))
+            self.model_.set_size(size)

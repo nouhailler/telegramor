@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 from PySide6.QtCore import (
-    QAbstractListModel, QModelIndex, QRect, QSize, QSortFilterProxyModel, Qt, Signal,
+    QAbstractListModel, QModelIndex, QRect, QRectF, QSize, QSortFilterProxyModel, Qt, Signal,
 )
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPalette
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QComboBox, QHBoxLayout, QLabel, QLineEdit, QListView, QStyle, QStyledItemDelegate,
     QStyleOptionViewItem, QVBoxLayout, QWidget,
 )
 
-from app.styles import sender_color
+from app import design, icons
+from app.design import sender_color
 from database.models import ConversationSummary
 
 from .formatting import plural, short_date
@@ -70,73 +71,98 @@ class ConversationFilter(QSortFilterProxyModel):
 
 
 class ConversationDelegate(QStyledItemDelegate):
-    HEIGHT = 64
+    """Ligne de conversation : avatar, nom, extrait, date, indicateurs discrets."""
+
+    HEIGHT = 68
 
     def sizeHint(self, option, index) -> QSize:  # noqa: N802
         return QSize(200, self.HEIGHT)
 
     def paint(self, p: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
         c: ConversationSummary = index.data(ROLE_CONV)
+        t = design.current()
         p.save()
         p.setRenderHint(QPainter.Antialiasing)
-        pal = option.palette
         r = option.rect
+        card = QRectF(r.adjusted(8, 2, -8, -2))
         selected = bool(option.state & QStyle.State_Selected)
+        hovered = bool(option.state & QStyle.State_MouseOver)
+        if selected or hovered:
+            path = QPainterPath()
+            path.addRoundedRect(card, 10, 10)
+            p.fillPath(path, QColor(t.accent_soft if selected else t.hover))
         if selected:
-            p.fillRect(r, pal.color(QPalette.Highlight))
-        elif option.state & QStyle.State_MouseOver:
-            p.fillRect(r, pal.color(QPalette.AlternateBase))
-        fg = QColor("#ffffff") if selected else pal.color(QPalette.Text)
-        muted = QColor(255, 255, 255, 200) if selected else pal.color(QPalette.PlaceholderText)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(t.accent))
+            p.drawRoundedRect(QRectF(card.left(), card.top() + 14, 3, card.height() - 28), 1.5, 1.5)
+        if option.state & QStyle.State_HasFocus and option.state & QStyle.State_KeyboardFocusChange:
+            p.setPen(QPen(QColor(t.accent), 1))
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(card.adjusted(0.5, 0.5, -0.5, -0.5), 10, 10)
+        fg = QColor(t.text)
+        muted = QColor(t.muted)
 
         # Avatar
-        d = 46
-        av = QRect(r.left() + 10, r.top() + (r.height() - d) // 2, d, d)
+        d = 42
+        av = QRect(int(card.left()) + 10, r.top() + (r.height() - d) // 2, d, d)
+        base = QColor(sender_color(None, c.name))
+        grad = QLinearGradient(av.topLeft(), av.bottomRight())
+        grad.setColorAt(0, base.lighter(112))
+        grad.setColorAt(1, base.darker(106))
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(sender_color(None, c.name)))
+        p.setBrush(grad)
         p.drawEllipse(av)
         f = QFont(option.font)
         f.setBold(True)
-        f.setPointSizeF(option.font.pointSizeF() * 1.25)
+        f.setPointSizeF(option.font.pointSizeF() * 1.15)
         p.setFont(f)
         p.setPen(QColor("white"))
         p.drawText(av, Qt.AlignCenter, (c.name[:1] or "?").upper())
 
         x = av.right() + 12
-        right = r.right() - 10
+        right = int(card.right()) - 12
+        top = r.top() + 13
         # Date
         fsmall = QFont(option.font)
-        fsmall.setPointSizeF(option.font.pointSizeF() * 0.85)
+        fsmall.setPointSizeF(option.font.pointSizeF() * 0.84)
         p.setFont(fsmall)
         date_txt = short_date(c.last_date)
-        dw = QFontMetrics(fsmall).horizontalAdvance(date_txt)
-        p.setPen(muted)
-        p.drawText(QRect(right - dw, r.top() + 10, dw, 20), Qt.AlignRight | Qt.AlignVCenter, date_txt)
+        fms = QFontMetrics(fsmall)
+        dw = fms.horizontalAdvance(date_txt)
+        p.setPen(QColor(t.accent_text) if selected else QColor(t.faint))
+        p.drawText(QRect(right - dw, top, dw, 20), Qt.AlignRight | Qt.AlignVCenter, date_txt)
         # Nom
         fb = QFont(option.font)
-        fb.setBold(True)
+        fb.setWeight(QFont.DemiBold)
         p.setFont(fb)
         p.setPen(fg)
-        name_rect = QRect(x, r.top() + 10, right - dw - 8 - x, 20)
+        name_rect = QRect(x, top, right - dw - 10 - x, 20)
         p.drawText(name_rect, Qt.AlignLeft | Qt.AlignVCenter,
                    QFontMetrics(fb).elidedText(c.name, Qt.ElideRight, name_rect.width()))
-        # Compteur
+        # Indicateurs discrets : médias, archives multiples, nombre de messages
+        y2 = top + 22
+        badges = []
+        if c.media_count:
+            badges.append(("image", f"{c.media_count:,}".replace(",", " ")))
+        if len(c.archives) > 1:
+            badges.append(("archive", str(len(c.archives))))
+        bx = right
         p.setFont(fsmall)
-        count = f"{c.message_count:,}".replace(",", " ")
-        cw = QFontMetrics(fsmall).horizontalAdvance(count) + 12
-        badge = QRect(right - cw, r.top() + 34, cw, 18)
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor(255, 255, 255, 60) if selected else pal.color(QPalette.AlternateBase))
-        p.drawRoundedRect(badge, 9, 9)
-        p.setPen(muted)
-        p.drawText(badge, Qt.AlignCenter, count)
-        # Aperçu
+        for icon_name, label in reversed(badges):
+            tw = fms.horizontalAdvance(label)
+            bx -= tw
+            p.setPen(muted)
+            p.drawText(QRect(bx, y2, tw, 18), Qt.AlignVCenter | Qt.AlignRight, label)
+            bx -= 15
+            p.drawPixmap(bx, y2 + 3, icons.pixmap(icon_name, t.faint, 12))
+            bx -= 8
+        # Aperçu du dernier message
         prev = (c.last_preview or "").replace("\n", " ")
         if c.last_sender:
             prev = f"{c.last_sender} : {prev}"
         p.setFont(option.font)
         p.setPen(muted)
-        prev_rect = QRect(x, r.top() + 34, badge.left() - 8 - x, 18)
+        prev_rect = QRect(x, y2, bx - 6 - x, 18)
         p.drawText(prev_rect, Qt.AlignLeft | Qt.AlignVCenter,
                    QFontMetrics(option.font).elidedText(prev, Qt.ElideRight, prev_rect.width()))
         p.restore()
@@ -150,16 +176,23 @@ class ConversationList(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("SidePanel")
-        self.setMinimumWidth(280)
+        self.setMinimumWidth(design.CONV_LIST_MIN)
         self.model = ConversationModel()
         self.proxy = ConversationFilter()
         self.proxy.setSourceModel(self.model)
 
-        self.search = QLineEdit(placeholderText="Rechercher une conversation…")
+        self.search = QLineEdit(placeholderText="Filtrer les conversations…")
+        self.search.setProperty("variant", "search")
+        self.search.setAccessibleName("Filtrer les conversations par nom")
+        self.search.setToolTip("Filtrer la liste par nom de conversation (Ctrl+K)")
+        self._search_icon = self.search.addAction(icons.icon("search", design.current().muted, 16),
+                                                  QLineEdit.LeadingPosition)
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self.proxy.setFilterFixedString)
 
         self.sort = QComboBox()
+        self.sort.setProperty("variant", "ghost")
+        self.sort.setToolTip("Ordre des conversations")
         self.sort.addItem("Plus récentes", "date")
         self.sort.addItem("Alphabétique", "name")
         self.sort.currentIndexChanged.connect(self._on_sort)
@@ -178,20 +211,33 @@ class ConversationList(QWidget):
         self.view.setMouseTracking(True)
         self.view.setUniformItemSizes(True)
         self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.view.setAccessibleName("Liste des conversations")
         self.view.selectionModel().currentChanged.connect(self._on_current)
 
         self.count_label = QLabel(objectName="Muted")
+        self.count_label.setProperty("role", "caption")
 
-        top = QHBoxLayout()
-        top.addWidget(self.search, 1)
-        top.addWidget(self.sort)
+        meta = QHBoxLayout()
+        meta.setContentsMargins(4, 0, 0, 0)
+        meta.addWidget(self.count_label)
+        meta.addStretch(1)
+        meta.addWidget(self.sort)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(8, 8, 0, 4)
-        lay.addLayout(top)
-        lay.addWidget(self.archive_filter)
+        lay.setContentsMargins(0, 12, 0, 6)
+        lay.setSpacing(6)
+        head = QVBoxLayout()
+        head.setContentsMargins(14, 0, 14, 0)
+        head.setSpacing(6)
+        head.addWidget(self.search)
+        head.addWidget(self.archive_filter)
+        head.addLayout(meta)
+        lay.addLayout(head)
         lay.addWidget(self.view, 1)
-        lay.addWidget(self.count_label)
         self.proxy.set_mode("date")
+
+    def retheme(self) -> None:
+        self._search_icon.setIcon(icons.icon("search", design.current().muted, 16))
+        self.view.viewport().update()
 
     def set_conversations(self, items: list[ConversationSummary]) -> None:
         current = self.current_id()

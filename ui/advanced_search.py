@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from PySide6.QtCore import QDate, Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QCompleter, QDateEdit, QFormLayout, QHBoxLayout, QLineEdit, QPushButton,
+    QCheckBox, QComboBox, QCompleter, QDateEdit, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout,
     QWidget,
 )
+
+from app import icons
 
 from database.search_engine import (
     CONTENT_LABELS, MODE_EXACT, MODE_PREFIX, MODE_WORDS, SORT_NEWEST, SORT_OLDEST, SORT_RELEVANCE,
@@ -31,6 +33,7 @@ class OptionalDate(QWidget):
     def __init__(self, label: str, parent=None) -> None:
         super().__init__(parent)
         self.check = QCheckBox(label)
+        self.check.setMinimumWidth(84)
         self.edit = QDateEdit(calendarPopup=True)
         self.edit.setDisplayFormat("dd/MM/yyyy")
         self.edit.setDate(QDate.currentDate())
@@ -75,29 +78,53 @@ class SearchFilters(QWidget):
         self.sort = _combo([("Pertinence", SORT_RELEVANCE), ("Plus récents d'abord", SORT_NEWEST),
                             ("Plus anciens d'abord", SORT_OLDEST)])
         reset = QPushButton("Réinitialiser les filtres")
+        reset.setProperty("variant", "ghost")
+        icons.bind(reset, "refresh", "muted", 16)
         reset.clicked.connect(self.reset)
 
-        form = QFormLayout(self)
-        form.setContentsMargins(4, 4, 4, 4)
-        form.setLabelAlignment(Qt.AlignRight)
-        form.addRow("Recherche", self.mode)
-        form.addRow("Conversation", self.conversation)
-        form.addRow("Archive", self.archive)
-        form.addRow("Expéditeur", self.sender)
-        form.addRow("Période", self.date_from)
-        form.addRow("", self.date_to)
-        form.addRow("Type", self.content)
-        form.addRow("Pièce jointe", self.media)
-        form.addRow("Lien", self.link)
-        form.addRow("Nom de fichier", self.filename)
-        form.addRow("Tri", self.sort)
-        form.addRow("", reset)
+        # Libellés au-dessus des champs : lisible dans un panneau étroit
+        form = QVBoxLayout(self)
+        form.setContentsMargins(14, 4, 14, 8)
+        form.setSpacing(4)
+
+        def row(label: str, *widgets) -> None:
+            cap = QLabel(label.upper())
+            cap.setProperty("role", "overline")
+            form.addSpacing(6)
+            form.addWidget(cap)
+            for w in widgets:
+                form.addWidget(w)
+
+        row("Recherche", self.mode)
+        row("Conversation", self.conversation)
+        row("Archive", self.archive)
+        row("Expéditeur", self.sender)
+        row("Période", self.date_from, self.date_to)
+        row("Type de contenu", self.content)
+        two = QHBoxLayout()
+        two.setSpacing(8)
+        for label, w in (("Pièce jointe", self.media), ("Lien", self.link)):
+            col = QVBoxLayout()
+            col.setSpacing(4)
+            cap = QLabel(label.upper())
+            cap.setProperty("role", "overline")
+            col.addWidget(cap)
+            col.addWidget(w)
+            two.addLayout(col, 1)
+        form.addSpacing(6)
+        form.addLayout(two)
+        row("Nom de fichier", self.filename)
+        row("Tri", self.sort)
+        form.addSpacing(8)
+        form.addWidget(reset, 0, Qt.AlignLeft)
 
         for c in (self.mode, self.conversation, self.archive, self.content, self.media, self.link, self.sort,
                   self.sender):
             # largeur limitée : les longs noms de conversation ne doivent pas élargir le panneau
             c.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
             c.setMinimumContentsLength(8)
+        for c in (self.media, self.link):          # côte à côte : plus étroites
+            c.setMinimumContentsLength(3)
         for c in (self.mode, self.conversation, self.archive, self.content, self.media, self.link, self.sort):
             c.currentIndexChanged.connect(self.changed)
         self.sender.currentTextChanged.connect(self.changed)

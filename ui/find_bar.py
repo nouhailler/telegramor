@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QToolButton, QWidget
 
+from app import design, icons
 from database.search_engine import MODE_PREFIX, SearchEngine, SearchQuery
 
 
@@ -22,7 +23,8 @@ class FindBar(QWidget):
 
     def __init__(self, engine: SearchEngine, parent=None) -> None:
         super().__init__(parent)
-        self.setObjectName("ChatHeader")
+        self.setObjectName("FindBar")
+        self.setAttribute(Qt.WA_StyledBackground, True)
         self.engine = engine
         self.conv_id: str | None = None
         self.current_seq_provider = lambda: None
@@ -31,6 +33,10 @@ class FindBar(QWidget):
         self.index = -1
 
         self.edit = QLineEdit(placeholderText="Rechercher dans cette conversation…")
+        self.edit.setProperty("variant", "search")
+        self.edit.setAccessibleName("Rechercher dans cette conversation")
+        self._icon_action = self.edit.addAction(icons.icon("search", design.current().muted, 16),
+                                                QLineEdit.LeadingPosition)
         self.edit.setClearButtonEnabled(True)
         self.edit.textChanged.connect(lambda: self._timer.start())
         self.edit.returnPressed.connect(lambda: self.step(-1))
@@ -41,16 +47,25 @@ class FindBar(QWidget):
         self.count = QLabel()
         self.count.setProperty("muted", True)
         self.count.setMinimumWidth(70)
-        up = QToolButton(text="▲", toolTip="Occurrence précédente, plus ancienne (Entrée)")
-        down = QToolButton(text="▼", toolTip="Occurrence suivante, plus récente (Maj+Entrée)")
+        up = QToolButton(toolTip="Occurrence précédente, plus ancienne (Entrée)")
+        down = QToolButton(toolTip="Occurrence suivante, plus récente (Maj+Entrée)")
+        icons.bind(up, "chevron-up", "muted", 18)
+        icons.bind(down, "chevron-down", "muted", 18)
+        up.setAccessibleName("Occurrence précédente")
+        down.setAccessibleName("Occurrence suivante")
         up.clicked.connect(lambda: self.step(-1))
         down.clicked.connect(lambda: self.step(1))
         adv = QToolButton(text="Avancée…", toolTip="Ouvrir la recherche avancée sur cette conversation")
+        adv.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        icons.bind(adv, "filters", "muted", 16)
         adv.clicked.connect(lambda: self.advanced_requested.emit(self.edit.text()))
-        close = QToolButton(text="✕", toolTip="Fermer (Échap)")
+        close = QToolButton(toolTip="Fermer (Échap)")
+        close.setAccessibleName("Fermer la recherche")
+        icons.bind(close, "close", "muted", 16)
         close.clicked.connect(self.close_bar)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(12, 4, 8, 4)
+        lay.setContentsMargins(18, 8, 12, 8)
+        lay.setSpacing(4)
         lay.addWidget(self.edit, 1)
         for w in (self.count, up, down, adv, close):
             lay.addWidget(w)

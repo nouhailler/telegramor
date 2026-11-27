@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QLoggingCategory, Qt, QThread, Slot
+from PySide6.QtCore import QLoggingCategory, QSize, Qt, QThread, Slot
 from PySide6.QtGui import QAction, QFontDatabase, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QDialogButtonBox, QFileDialog, QInputDialog, QLabel, QMainWindow,
-    QMessageBox, QPlainTextEdit, QProgressDialog, QPushButton, QSplitter, QStackedWidget,
-    QVBoxLayout, QWidget, QLineEdit, QToolButton, QSizePolicy,
+    QApplication, QButtonGroup, QDialog, QDialogButtonBox, QFileDialog, QFrame, QHBoxLayout, QInputDialog,
+    QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QProgressDialog, QPushButton, QSizePolicy,
+    QSplitter, QStackedWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
 from database.db_manager import Database
@@ -26,12 +26,14 @@ from ui.global_search import GlobalSearchPanel
 from ui.information_panel import InformationPanel
 from ui.media_viewer import ImageViewer, play_video
 from ui.message_view import MessageView
+from ui.components import ElidedLabel, dialog_header
 
+from . import design, icons
 from .settings import ZOOM_STEPS, AppSettings
 from .styles import apply_theme, theme_for
 
 APP_NAME = "Telegram Archive Explorer"
-APP_VERSION = "1.1"
+APP_VERSION = "1.2"
 ICON_PATH = Path(__file__).parent / "resources" / "icon.svg"
 
 
@@ -42,36 +44,96 @@ class ReportDialog(QDialog):
         view = QPlainTextEdit(text, readOnly=True)
         view.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
         view.setLineWrapMode(QPlainTextEdit.NoWrap)
-        bb = QDialogButtonBox(QDialogButtonBox.Close)
-        bb.button(QDialogButtonBox.Close).setText("Fermer")
+        bb = QDialogButtonBox()
+        close = bb.addButton("Fermer", QDialogButtonBox.RejectRole)
+        close.setProperty("variant", "primary")
         bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self)
-        lay.addWidget(view)
+        lay.setContentsMargins(20, 18, 20, 16)
+        lay.setSpacing(14)
+        lay.addWidget(dialog_header(title, "Contrôle complet de la lecture de l'export", "file-text"))
+        lay.addWidget(view, 1)
         lay.addWidget(bb)
-        self.resize(820, 620)
+        self.resize(860, 640)
 
 
 class Welcome(QWidget):
     def __init__(self, on_import_dir, on_import_files, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("Welcome")
-        title = QLabel("<h2>Votre bibliothèque est vide</h2>", alignment=Qt.AlignCenter)
-        text = QLabel("Importez un export Telegram Desktop au format HTML\n"
-                      "(dossier « ChatExport_… » contenant messages.html).\n"
-                      "Les fichiers d'origine ne sont jamais modifiés ; tout reste sur cet ordinateur.",
-                      alignment=Qt.AlignCenter)
-        b1 = QPushButton("Importer un dossier d'export…", objectName="Primary")
+        logo = QLabel(alignment=Qt.AlignCenter)
+        logo.setPixmap(QIcon(str(ICON_PATH)).pixmap(QSize(88, 88)))
+        title = QLabel("Bienvenue dans Telegramor", alignment=Qt.AlignCenter)
+        title.setProperty("role", "title")
+        text = QLabel("Votre bibliothèque est vide. Importez un export Telegram Desktop au format HTML "
+                      "(dossier « ChatExport_… » contenant messages.html) pour parcourir, rechercher "
+                      "et explorer vos conversations.", alignment=Qt.AlignCenter)
+        text.setWordWrap(True)
+        text.setMaximumWidth(520)
+        b1 = QPushButton("Importer un dossier d'export…")
+        b1.setProperty("variant", "primary")
+        icons.bind(b1, "import", "surface", 16, "surface", "surface")
         b1.clicked.connect(on_import_dir)
         b2 = QPushButton("Importer des fichiers HTML…")
+        icons.bind(b2, "file-text", "muted", 16)
         b2.clicked.connect(on_import_files)
+        note = QLabel("Les fichiers d'origine ne sont jamais modifiés ; tout reste sur cet ordinateur.",
+                      alignment=Qt.AlignCenter)
+        note.setProperty("role", "caption")
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        buttons.addWidget(b1)
+        buttons.addWidget(b2)
+        buttons.addStretch(1)
         lay = QVBoxLayout(self)
         lay.addStretch(1)
+        lay.addWidget(logo)
+        lay.addSpacing(10)
         lay.addWidget(title)
-        lay.addWidget(text)
-        lay.addSpacing(16)
-        lay.addWidget(b1, 0, Qt.AlignHCenter)
-        lay.addWidget(b2, 0, Qt.AlignHCenter)
+        lay.addWidget(text, 0, Qt.AlignHCenter)
+        lay.addSpacing(18)
+        lay.addLayout(buttons)
+        lay.addSpacing(10)
+        lay.addWidget(note)
         lay.addStretch(2)
+
+
+class NavRail(QFrame):
+    """Barre latérale : sections principales de Telegramor."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("NavRail")
+        self.setFixedWidth(design.NAV_WIDTH)
+        self.lay = QVBoxLayout(self)
+        self.lay.setContentsMargins(6, 12, 6, 12)
+        self.lay.setSpacing(4)
+        logo = QLabel(objectName="NavLogo", alignment=Qt.AlignCenter)
+        logo.setPixmap(QIcon(str(ICON_PATH)).pixmap(QSize(38, 38)))
+        logo.setToolTip(f"{APP_NAME} {APP_VERSION}")
+        self.lay.addWidget(logo)
+        self.lay.addSpacing(14)
+        self.group = QButtonGroup(self)
+        self.group.setExclusive(True)
+
+    def add(self, key: str, label: str, icon_name: str, tip: str, slot, checkable: bool = False,
+            bottom: bool = False) -> QToolButton:
+        b = QToolButton(text=label, toolTip=tip)
+        b.setObjectName(f"Nav_{key}")
+        b.setAccessibleName(label)
+        b.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        b.setFixedSize(design.NAV_WIDTH - 12, 60)
+        b.setCursor(Qt.PointingHandCursor)
+        b.setCheckable(checkable)
+        if checkable:
+            self.group.addButton(b)
+        icons.bind(b, icon_name, "muted", 22, "text", "accent")
+        b.clicked.connect(lambda *_: slot())
+        if bottom and not getattr(self, "_stretched", False):
+            self.lay.addStretch(1)
+            self._stretched = True
+        self.lay.addWidget(b, 0, Qt.AlignHCenter)
+        return b
 
 
 class MainWindow(QMainWindow):
@@ -113,9 +175,29 @@ class MainWindow(QMainWindow):
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setStretchFactor(2, 0)
-        self.splitter.setSizes([320, 760, 300])
+        self.splitter.setSizes([330, 760, 310])
         self.splitter.setChildrenCollapsible(False)
-        self.setCentralWidget(self.splitter)
+        self.splitter.setHandleWidth(1)
+
+        # Barre latérale | (barre du haut / zones de travail)
+        self.nav = NavRail()
+        self.topbar = QFrame(objectName="TopBar")
+        self.topbar.setFixedHeight(design.TOPBAR_HEIGHT)
+        work = QWidget()
+        wl = QVBoxLayout(work)
+        wl.setContentsMargins(0, 0, 0, 0)
+        wl.setSpacing(0)
+        wl.addWidget(self.topbar)
+        wl.addWidget(self.splitter, 1)
+        central = QWidget()
+        cl = QHBoxLayout(central)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(0)
+        cl.addWidget(self.nav)
+        cl.addWidget(work, 1)
+        self.setCentralWidget(central)
+        self.setMinimumSize(980, 640)
+        self._info_auto_hidden = False
 
         # --- Signaux -------------------------------------------------------
         self.conv_list.conversation_selected.connect(self.open_conversation)
@@ -136,6 +218,7 @@ class MainWindow(QMainWindow):
         self.message_view.advanced_search_requested.connect(self.advanced_search_in)
         self._build_search_bar()
         self._build_menus()
+        self._build_nav()
         self.statusBar()
 
         geom, split = self.settings.window_state()
@@ -157,32 +240,101 @@ class MainWindow(QMainWindow):
     # ================================================================== #
 
     def _build_search_bar(self) -> None:
-        """Barre de recherche globale, en haut de la fenêtre."""
-        bar = self.addToolBar("Recherche")
-        bar.setObjectName("SearchBar")
-        bar.setMovable(False)
-        self.search_field = QLineEdit(placeholderText="🔍  Rechercher dans toutes les conversations…  (Ctrl+Maj+F)")
+        """Barre du haut : section active, recherche globale (fonction centrale) et actions."""
+        bar = self.topbar
+        self.section_title = ElidedLabel("Conversations", objectName="TopBarTitle")
+        self.section_sub = ElidedLabel(objectName="TopBarSubtitle")
+        for lbl in (self.section_title, self.section_sub):
+            lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        titles = QVBoxLayout()
+        titles.setSpacing(0)
+        titles.addStretch(1)
+        titles.addWidget(self.section_title)
+        titles.addWidget(self.section_sub)
+        titles.addStretch(1)
+        title_box = QWidget()
+        title_box.setLayout(titles)
+        title_box.setFixedWidth(design.CONV_LIST_MIN - 24)
+
+        self.search_field = QLineEdit(placeholderText="Rechercher dans toutes les conversations…")
+        self.search_field.setObjectName("GlobalSearch")
+        self.search_field.setAccessibleName("Recherche globale")
+        self.search_field.setToolTip("Recherche plein texte dans toutes les conversations et archives (Ctrl+Maj+F)")
+        self._search_icon = self.search_field.addAction(QIcon(), QLineEdit.LeadingPosition)
         self.search_field.setClearButtonEnabled(True)
-        self.search_field.setMinimumWidth(420)
-        self.search_field.setMaximumWidth(760)
+        self.search_field.setMinimumWidth(300)
+        self.search_field.setMaximumWidth(720)
         self.search_field.textEdited.connect(self._on_search_text)
         self.search_field.returnPressed.connect(self._on_search_return)
-        adv = QToolButton(text="Recherche avancée", toolTip="Filtres : conversation, expéditeur, dates, type…")
+        hint = self.shortcut_hint = QLabel("Ctrl+Maj+F", objectName="ShortcutHint")
+        hint.setToolTip("Raccourci de la recherche globale")
+        hint.setFixedHeight(22)
+        hint.setAlignment(Qt.AlignCenter)
+        adv = QToolButton(text="Filtres", toolTip="Recherche avancée : conversation, expéditeur, dates, type… "
+                                                  "(Ctrl+Maj+A)")
+        adv.setProperty("variant", "secondary")
+        adv.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        icons.bind(adv, "filters", "muted", 16)
         adv.clicked.connect(self.open_advanced_search)
-        bar.addWidget(self.search_field)
-        bar.addWidget(adv)
-        spacer = QWidget()
-        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        bar.addWidget(spacer)
-        for text, tip, slot in (("🖼 Galerie", "Galerie multimédia (Ctrl+M)", self.open_gallery),
-                                ("📊 Statistiques", "Statistiques (Ctrl+Maj+S)", self.open_statistics),
-                                ("🗄 Bibliothèque", "Bibliothèque des archives (Ctrl+L)", self.open_library)):
-            b = QToolButton(text=text, toolTip=tip)
-            b.clicked.connect(slot)
-            bar.addWidget(b)
+        self.adv_btn = adv
+        imp = QPushButton("Importer")
+        imp.setProperty("variant", "primary")
+        imp.setToolTip("Importer un dossier d'export Telegram (Ctrl+O)")
+        icons.bind(imp, "import", "surface", 16, "surface", "surface")
+        imp.clicked.connect(self.import_directory)
+        self.theme_btn = QToolButton(toolTip="Basculer entre thème clair et sombre (Ctrl+Maj+D)")
+        self.theme_btn.setAccessibleName("Thème clair ou sombre")
+        self.theme_btn.clicked.connect(lambda: self.act_dark.trigger())
+
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(20, 0, 16, 0)
+        h.setSpacing(10)
+        h.addWidget(title_box)
+        h.addSpacing(8)
+        h.addWidget(self.search_field, 1)
+        h.addWidget(hint, 0, Qt.AlignVCenter)
+        h.addWidget(adv)
+        h.addStretch(0)
+        h.addSpacing(12)
+        h.addWidget(self.theme_btn)
+        h.addWidget(imp)
+        self._retheme_topbar()
         for w in (self.search_field, self.search_panel):
             QShortcut(QKeySequence(Qt.Key_Escape), w, activated=self.close_search,
                       context=Qt.WidgetWithChildrenShortcut)
+
+    def _retheme_topbar(self) -> None:
+        t = design.current()
+        self._search_icon.setIcon(icons.icon("search", t.muted, 18))
+        icons.bind(self.theme_btn, "sun" if t.dark else "moon", "muted", 18)
+
+    def _build_nav(self) -> None:
+        n = self.nav
+        self.nav_conversations = n.add("conversations", "Conversations", "chat",
+                                       "Conversations (Ctrl+K pour chercher par nom)", self.show_conversations, True)
+        self.nav_search = n.add("search", "Recherche", "search", "Recherche globale (Ctrl+Maj+F)",
+                                self.show_global_search, True)
+        n.add("gallery", "Galerie", "image", "Galerie multimédia (Ctrl+M)", self.open_gallery)
+        n.add("stats", "Statistiques", "chart", "Statistiques (Ctrl+Maj+S)", self.open_statistics)
+        n.add("timeline", "Chronologie", "timeline", "Chronologie : années, mois, jours (Ctrl+T)", self.show_timeline)
+        n.add("library", "Archives", "archive", "Bibliothèque des archives (Ctrl+L)", self.open_library)
+        n.add("help", "Aide", "keyboard", "Raccourcis clavier (F1)", self.show_shortcuts, bottom=True)
+        self.nav_conversations.setChecked(True)
+
+    def show_conversations(self) -> None:
+        self.close_search()
+        self.conv_list.search.setFocus()
+
+    def show_global_search(self) -> None:
+        self.show_search_panel()
+        self.focus_global_search()
+
+    def _update_section(self) -> None:
+        searching = self.left.currentWidget() is self.search_panel
+        self.section_title.setText("Recherche" if searching else "Conversations")
+        conv = self.message_view.conv
+        self.section_sub.setText(conv.name if conv else "")
+        (self.nav_search if searching else self.nav_conversations).setChecked(True)
 
     def _build_menus(self) -> None:
         mb = self.menuBar()
@@ -352,6 +504,7 @@ class MainWindow(QMainWindow):
         self.message_view.open_conversation(conv, seq, highlight=highlight, align=align)
         self.info_panel.set_conversation(conv)
         self.setWindowTitle(f"{conv.name} — {APP_NAME}")
+        self._update_section()
 
     def _save_position(self, conv_id: str, seq: int) -> None:
         bounds = self.message_view.bounds
@@ -466,6 +619,7 @@ class MainWindow(QMainWindow):
         if self.left.currentWidget() is not self.search_panel:
             self._refresh_search_filters()
             self.left.setCurrentWidget(self.search_panel)
+        self._update_section()
 
     def focus_global_search(self) -> None:
         self.search_field.setFocus()
@@ -519,6 +673,7 @@ class MainWindow(QMainWindow):
             if current:
                 self.conv_list.select(current.id, emit=False)
         self.message_view.set_highlight_terms([])
+        self._update_section()
 
     def toggle_dark(self) -> None:
         self.settings.dark_mode = self.act_dark.isChecked()
@@ -527,9 +682,44 @@ class MainWindow(QMainWindow):
         self.message_view.set_theme(self.theme)
         self.search_panel.set_theme(self.theme)
         self.info_panel.timeline.set_accent(self.theme.accent)
+        self.info_panel.retheme()
+        self.conv_list.retheme()
+        self._retheme_topbar()
+        for win in (getattr(self, "_gallery", None), getattr(self, "_statistics", None)):
+            try:
+                if win is not None and win.isVisible() and hasattr(win, "retheme"):
+                    win.retheme(self.theme)
+            except RuntimeError:
+                pass
 
     def toggle_info_panel(self) -> None:
-        self._set_info_visible(not self.info_panel.isVisible())
+        self._info_auto_hidden = False
+        show = not self.info_panel.isVisible()
+        self._info_forced = show and self.width() < self.COMPACT_WIDTH
+        if not show and self.width() < self.COMPACT_WIDTH:
+            self._info_forced = False
+        self._set_info_visible(show)
+
+    COMPACT_WIDTH = 1180
+
+    def resizeEvent(self, e) -> None:  # noqa: N802
+        super().resizeEvent(e)
+        # Fenêtre étroite : le panneau d'informations s'efface pour laisser la place
+        # à la lecture (le réglage de l'utilisateur n'est pas modifié).
+        narrow = self.width() < self.COMPACT_WIDTH
+        self.shortcut_hint.setVisible(self.width() >= 1240)
+        if narrow and not self.info_panel.isHidden() and not self._info_auto_hidden \
+                and not getattr(self, "_info_forced", False):
+            self._info_auto_hidden = True
+            self.info_panel.hide()
+            self.message_view.info_btn.setChecked(False)
+        elif not narrow:
+            self._info_forced = False
+        if not narrow and self._info_auto_hidden:
+            self._info_auto_hidden = False
+            if self.settings.info_panel_visible:
+                self.info_panel.show()
+                self.message_view.info_btn.setChecked(True)
 
     def _set_info_visible(self, visible: bool) -> None:
         self.info_panel.setVisible(visible)
@@ -561,7 +751,7 @@ class MainWindow(QMainWindow):
         current = self.settings.owner_name or detected
         idx = options.index(current) if current in options else 0
         name, ok = QInputDialog.getItem(
-            self, "Mon nom", "Vos messages s'affichent à droite, en vert.\n"
+            self, "Mon nom", "Vos messages s'affichent à droite, sur fond bleu.\n"
             + (f"Détecté automatiquement : {detected}\n" if detected else "") + "Qui êtes-vous ?",
             options, idx, False)
         if ok:

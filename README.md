@@ -7,12 +7,18 @@ Fonctionnement 100 % local : aucune connexion à Telegram ni à Internet.
 > fiable, interface graphique, moteur de recherche, bibliothèque multi-archives,
 > galerie multimédia, statistiques et chronologie avancée.
 
+![Telegramor : liste des conversations, lecture et panneau d'informations](docs/captures/apres_principal.png)
+
+Interface en thème clair ou sombre (Ctrl+Maj+D), avec barre latérale de navigation et
+recherche globale mise en avant. Système de design et détail de la refonte :
+[docs/rapport-refonte-graphique.md](docs/rapport-refonte-graphique.md).
+
 ## Installation par paquet .deb (Debian 13)
 
 Téléchargez le fichier `.deb` de la [dernière version](https://github.com/nouhailler/telegramor/releases/latest), puis :
 
 ```bash
-sudo apt install ./telegram-archive-explorer_1.1.0_all.deb
+sudo apt install ./telegram-archive-explorer_1.2.0_all.deb
 ```
 
 L'application apparaît dans le menu (« Telegram Archive Explorer ») et se lance
@@ -26,6 +32,8 @@ sources : `./packaging/build_deb.sh` (résultat dans `dist/`).
 ```bash
 sudo apt install python3 python3-venv python3-pip \
                  python3-pyside6.qtwidgets python3-pyside6.qtsvg
+# facultatif, police recommandée pour l'interface :
+sudo apt install fonts-inter
 # facultatif, pour lire les vidéos dans l'application :
 sudo apt install python3-pyside6.qtmultimedia python3-pyside6.qtmultimediawidgets
 ./install.sh              # ou ./install.sh --raccourci pour l'ajouter au menu
@@ -177,7 +185,9 @@ d'origine).
 main.py                     point d'entrée (interface ou ligne de commande)
 app/        main_window.py  fenêtre principale, menus, importation
             settings.py     paramètres persistants (QSettings)
-            styles.py       thèmes clair / sombre
+            design.py       système de design : couleurs, typographie, espacements
+            icons.py        pictogrammes SVG colorés selon le thème
+            styles.py       feuille de style unique (thèmes clair / sombre)
 importer/                   parseur HTML, détection, médias, rapport (étape 1)
 database/   db_manager.py   connexion SQLite, migrations (PRAGMA user_version)
             repositories.py écriture des imports, lectures paginées
@@ -191,9 +201,10 @@ services/   indexing_service.py  importation dans un thread
 ui/         conversation_list.py, message_view.py, message_widgets.py,
             information_panel.py, media_gallery.py, media_viewer.py, formatting.py,
             global_search.py, advanced_search.py, find_bar.py, archive_library.py,
-            gallery_window.py, statistics_window.py, timeline.py
+            gallery_window.py, statistics_window.py, timeline.py, export_dialog.py,
+            components.py (en-têtes de fenêtre, libellés abrégés…)
 tests/
-docs/       ETAPE1_PARSEUR.md … ETAPE5_AVANCE.md
+docs/       ETAPE1_PARSEUR.md … ETAPE5_AVANCE.md, rapport-refonte-graphique.md
 ```
 
 ## Sécurité et confidentialité

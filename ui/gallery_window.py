@@ -8,18 +8,20 @@ from PySide6.QtCore import QAbstractListModel, QModelIndex, QPoint, QSize, Qt, S
 from PySide6.QtGui import QColor, QGuiApplication, QIcon, QPainter, QPixmap
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDialog, QHBoxLayout, QHeaderView, QLabel, QListView, QMenu, QPushButton,
-    QSlider,
+    QAbstractItemView, QComboBox, QDialog, QFrame, QHBoxLayout, QHeaderView, QLabel, QListView, QMenu,
+    QPushButton, QSizePolicy, QSlider,
     QStackedWidget, QTabBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
 )
 
+from app import design, icons
 from database.models import MediaRow
 from database.repositories import LibraryRepository, media_label
 from services.media_service import ThumbnailLoader, human_size, open_url, open_with_system, show_in_folder
 
+from .components import dialog_header
 from .export_dialog import copy_to_folder
 from .formatting import full_datetime, month_label, plural, short_date
-from .media_gallery import ThumbnailDelegate
+from .media_gallery import ThumbnailDelegate, thumb_decorate, thumb_placeholder
 from .media_viewer import ImageViewer, play_video
 
 PAGE = 200
@@ -31,6 +33,7 @@ TABS = [
     ("Audio et vocaux", ("audio", "voice")),
     ("Liens", ()),
 ]
+TAB_ICONS = ["image", "video", "film", "file", "music", "link"]
 VISUAL_TABS = {0, 1, 2}
 
 
@@ -101,53 +104,24 @@ class GalleryModel(QAbstractListModel):
         src = m.abs_thumbnail if m.thumbnail_available else (
             m.abs_file if m.file_available and m.media_type in ("photo", "sticker") else None)
         if src is None:
-            icon = QIcon(self._placeholder(m))
+            icon = QIcon(thumb_placeholder(m, self.size))
             self._icons[row] = icon
             return icon
         # image demandée deux fois plus grande : recadrée en carré sans être agrandie (pas de flou)
         key, pm = ThumbnailLoader.instance().request(src, self.size * 2)
         if pm is not None:
-            self._icons[row] = QIcon(self._decorate(pm, m))
+            self._icons[row] = QIcon(thumb_decorate(pm, m, self.size))
             return self._icons[row]
         self._keys[key] = row
-        return QIcon(self._placeholder(m, loading=True))
-
-    def _placeholder(self, m: MediaRow, loading: bool = False) -> QPixmap:
-        pm = QPixmap(self.size)
-        missing = not m.file_available and not loading
-        pm.fill(QColor("#5c2b29") if missing else QColor("#3b4a59"))
-        p = QPainter(pm)
-        p.setPen(QColor("white"))
-        label = "…" if loading else (media_label(m.media_type) or "") + ("\nintrouvable" if missing else "")
-        p.drawText(pm.rect(), Qt.AlignCenter | Qt.TextWordWrap, label)
-        p.end()
-        return pm
-
-    def _decorate(self, pm: QPixmap, m: MediaRow) -> QPixmap:
-        side = min(pm.width(), pm.height())
-        sq = pm.copy((pm.width() - side) // 2, (pm.height() - side) // 2, side, side).scaled(
-            self.size, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-        badge = {"video": m.duration_raw or "▶", "video_message": "▶", "animation": "GIF"}.get(m.media_type)
-        if not m.file_available and not m.not_included:
-            badge = "⚠ absent"
-        if badge:
-            p = QPainter(sq)
-            p.setRenderHint(QPainter.Antialiasing)
-            w = p.fontMetrics().horizontalAdvance(badge) + 10
-            p.setBrush(QColor(0, 0, 0, 160))
-            p.setPen(Qt.NoPen)
-            p.drawRoundedRect(4, self.size.height() - 22, w, 18, 5, 5)
-            p.setPen(QColor("#ff8a80") if badge.startswith("⚠") else QColor("white"))
-            p.drawText(9, self.size.height() - 9, badge)
-            p.end()
-        return sq
+        return QIcon(thumb_placeholder(m, self.size, loading=True))
 
     def _on_loaded(self, key: str, pm: QPixmap) -> None:
         row = self._keys.pop(key, None)
         if row is None or row >= len(self.items):
             return
         m = self.items[row]
-        self._icons[row] = QIcon(self._decorate(pm, m)) if not pm.isNull() else QIcon(self._placeholder(m))
+        self._icons[row] = QIcon(thumb_decorate(pm, m, self.size) if not pm.isNull()
+                                 else thumb_placeholder(m, self.size))
         idx = self.index(row)
         self.dataChanged.emit(idx, idx, [Qt.DecorationRole])
 
@@ -163,8 +137,15 @@ class GalleryWindow(QDialog):
         self.repo = repo
 
         self.tabs = QTabBar()
-        for label, _ in TABS:
+        self.tabs.setProperty("variant", "segmented")
+        self.tabs.setDrawBase(False)
+        self.tabs.setUsesScrollButtons(False)
+        self.tabs.setElideMode(Qt.ElideNone)
+        self.tabs.setExpanding(False)
+        self.tabs.setIconSize(QSize(16, 16))
+        for (label, _), icon_name in zip(TABS, TAB_ICONS):
             self.tabs.addTab(label)
+        self._tab_icons()
         self.tabs.currentChanged.connect(self.reload)
 
         self.conv = QComboBox()
@@ -173,23 +154,36 @@ class GalleryWindow(QDialog):
         self.order = QComboBox()
         self.order.addItem("Plus récents d'abord", True)
         self.order.addItem("Plus anciens d'abord", False)
-        for c in (self.conv, self.sender, self.year):
+        for c, n in ((self.conv, 18), (self.sender, 12), (self.year, 8)):
             c.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
-            c.setMinimumContentsLength(12)
-        self.size_slider = QSlider(Qt.Horizontal, minimum=64, maximum=256, value=128, singleStep=16)
-        self.size_slider.setFixedWidth(140)
+            c.setMinimumContentsLength(n)
+        self.order.setToolTip("Ordre d'affichage")
+        self.size_slider = QSlider(Qt.Horizontal, minimum=64, maximum=256, value=144, singleStep=16)
+        self.size_slider.setFixedWidth(120)
         self.size_slider.setToolTip("Taille des miniatures")
+        self.size_slider.setAccessibleName("Taille des miniatures")
         self.count = QLabel()
-        self.count.setProperty("muted", True)
+        self.count.setProperty("role", "caption")
         self.month = QLabel()
-        self.month.setProperty("muted", True)
+        self.month.setProperty("role", "caption")
 
-        filters = QHBoxLayout()
-        for w in (QLabel("Conversation"), self.conv, QLabel("Expéditeur"), self.sender, QLabel("Année"),
-                  self.year, self.order):
-            filters.addWidget(w)
+        bar = QFrame(objectName="Toolbar")
+        filters = QHBoxLayout(bar)
+        filters.setContentsMargins(12, 8, 12, 8)
+        filters.setSpacing(8)
+        self._filter_icons: list[tuple[QLabel, str]] = []
+        for icon_name, tip, combo in (("chat", "Conversation", self.conv), ("user", "Expéditeur", self.sender),
+                                      ("calendar", "Année", self.year), ("sort", "Ordre", self.order)):
+            ic = QLabel(toolTip=tip)
+            self._filter_icons.append((ic, icon_name))
+            combo.setToolTip(tip)
+            combo.setAccessibleName(tip)
+            filters.addWidget(ic)
+            filters.addWidget(combo)
+            filters.addSpacing(6)
         filters.addStretch(1)
-        filters.addWidget(QLabel("Taille"))
+        self.size_icon = QLabel(toolTip="Taille des miniatures")
+        filters.addWidget(self.size_icon)
         filters.addWidget(self.size_slider)
 
         self.model = GalleryModel(repo)
@@ -199,6 +193,8 @@ class GalleryWindow(QDialog):
         self.grid.setResizeMode(QListView.Adjust)
         self.grid.setMovement(QListView.Static)
         self.grid.setUniformItemSizes(True)
+        self.grid.setSpacing(0)
+        self.grid.setAccessibleName("Grille des médias")
         self.grid.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.grid.setItemDelegate(ThumbnailDelegate(self.grid))
         self.grid.setMouseTracking(True)
@@ -210,7 +206,8 @@ class GalleryWindow(QDialog):
 
         self.table = QTreeWidget()
         self.table.setRootIsDecorated(False)
-        self.table.setAlternatingRowColors(True)
+        self.table.setAlternatingRowColors(False)
+        self.table.setIconSize(QSize(18, 18))
         self.table.setSortingEnabled(True)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -222,30 +219,63 @@ class GalleryWindow(QDialog):
         self.stack.addWidget(self.table)
 
         self.selection = QLabel()
+        self.selection.setStyleSheet("font-weight: 600;")
         self.copy_sel = QPushButton("Copier la sélection…")
+        self.copy_sel.setProperty("variant", "primary")
+        icons.bind(self.copy_sel, "copy", "surface", 16, "surface", "surface")
         self.copy_sel.setToolTip("Copier les éléments sélectionnés vers un dossier (Ctrl+Maj+C)")
         self.copy_sel.clicked.connect(self.copy_selection)
         self.copy_all_btn = QPushButton("Tout copier…")
+        icons.bind(self.copy_all_btn, "folder", "muted", 16)
         self.copy_all_btn.setToolTip("Copier vers un dossier tous les éléments de l'onglet, filtres compris")
         self.copy_all_btn.clicked.connect(self.copy_all)
         QShortcut(QKeySequence("Ctrl+Shift+C"), self, self.copy_selection)
 
-        status = QHBoxLayout()
+        action_bar = QFrame(objectName="ActionBar")
+        status = QHBoxLayout(action_bar)
+        status.setContentsMargins(20, 10, 20, 10)
+        status.setSpacing(10)
         status.addWidget(self.count)
         status.addWidget(self.selection)
-        status.addStretch(1)
+        status.addSpacing(10)
         status.addWidget(self.month)
-        hint = QLabel("Ctrl/Maj + clic : sélection multiple · double-clic : ouvrir · clic droit : actions")
-        hint.setProperty("muted", True)
-        status.addWidget(hint)
-        status.addWidget(self.copy_sel)
+        status.addStretch(1)
+        hint = QLabel("Ctrl/Maj + clic : sélection multiple · double-clic : ouvrir")
+        hint.setToolTip("Clic droit : aller au message, ouvrir le dossier, copier vers un dossier…")
+        hint.setProperty("role", "caption")
+        hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        hint.setMinimumWidth(40)
+        status.addWidget(hint, 1)
         status.addWidget(self.copy_all_btn)
+        status.addWidget(self.copy_sel)
+
+        self.header_title = dialog_header("Galerie multimédia", "Photos, vidéos, fichiers et liens de "
+                                          "toute la bibliothèque", "image")
+        top = QVBoxLayout()
+        top.setContentsMargins(20, 18, 20, 10)
+        top.setSpacing(12)
+        top.addWidget(self.header_title)
+        tabs_row = QHBoxLayout()
+        tabs_row.addWidget(self.tabs)
+        tabs_row.addStretch(1)
+        top.addLayout(tabs_row)
+        top.addWidget(bar)
+        content = QFrame()
+        content.setProperty("card", True)
+        cl = QVBoxLayout(content)
+        cl.setContentsMargins(8, 8, 2, 8)
+        cl.addWidget(self.stack)
+        body = QVBoxLayout()
+        body.setContentsMargins(20, 0, 20, 14)
+        body.addWidget(content)
 
         lay = QVBoxLayout(self)
-        lay.addWidget(self.tabs)
-        lay.addLayout(filters)
-        lay.addWidget(self.stack, 1)
-        lay.addLayout(status)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        lay.addLayout(top)
+        lay.addLayout(body, 1)
+        lay.addWidget(action_bar)
+        self.retheme()
 
         self.grid.selectionModel().selectionChanged.connect(self._update_selection)
         self.table.itemSelectionChanged.connect(self._update_selection)
@@ -253,10 +283,26 @@ class GalleryWindow(QDialog):
         for c in (self.conv, self.sender, self.year, self.order):
             c.currentIndexChanged.connect(self.reload)
         self.size_slider.valueChanged.connect(self._apply_size)
-        self.resize(1100, 760)
+        self.resize(1180, 800)
+        self.setMinimumSize(760, 520)
         self.reload()
 
     # ------------------------------------------------------------------ #
+
+    def _tab_icons(self) -> None:
+        t = design.current()
+        for i, name in enumerate(TAB_ICONS):
+            self.tabs.setTabIcon(i, icons.icon(name, t.muted, 16, t.text, t.accent))
+
+    def retheme(self, theme=None) -> None:
+        t = design.current()
+        self._tab_icons()
+        for ic, name in self._filter_icons:
+            ic.setPixmap(icons.pixmap(name, t.muted, 16))
+        self.size_icon.setPixmap(icons.pixmap("grid", t.muted, 16))
+        self.model.set_icon_size(self.model.size)
+        if self.stack.currentWidget() is self.table:
+            self.reload()
 
     def _populate_filters(self) -> None:
         self.conv.addItem("Toutes les conversations", None)
@@ -302,6 +348,7 @@ class GalleryWindow(QDialog):
                                        limit=5000)
             for url, cid, cname, seq, date, sender in rows:
                 it = QTreeWidgetItem([url, cname, sender or "", short_date(date)])
+                it.setIcon(0, icons.icon("link", design.current().accent, 18))
                 it.setData(0, Qt.UserRole, ("link", url, cid, seq))
                 it.setData(3, Qt.UserRole, date or "")
                 it.setToolTip(0, url)
@@ -312,13 +359,19 @@ class GalleryWindow(QDialog):
             rows = self.repo.gallery_page(types=types, limit=5000, **f)
             for m in rows:
                 name = m.title or (Path(m.file_path).name if m.file_path else media_label(m.media_type) or "")
-                state = "OK" if m.file_available else ("non inclus" if m.not_included else "⚠ introuvable")
+                state = "OK" if m.file_available else ("Non inclus" if m.not_included else "Introuvable")
                 it = QTreeWidgetItem([name, media_label(m.media_type) or m.media_type, human_size(m.file_size),
                                       m.conversation_name or "", m.message_sender or "",
                                       short_date(m.message_date), state])
                 it.setData(0, Qt.UserRole, ("media", m))
+                th = design.current()
+                missing = not m.file_available and not m.not_included
+                it.setIcon(0, icons.icon("alert" if missing else icons.MEDIA_ICONS.get(m.media_type, "file"),
+                                         th.danger if missing else th.accent, 18))
                 if not m.file_available:
-                    it.setForeground(6, QColor("#d32f2f"))
+                    it.setForeground(6, QColor(th.danger if missing else th.muted))
+                else:
+                    it.setForeground(6, QColor(th.success))
                 it.setToolTip(0, m.file_path or "")
                 self.table.addTopLevelItem(it)
             total = len(rows)
@@ -331,7 +384,7 @@ class GalleryWindow(QDialog):
     def _apply_size(self) -> None:
         s = self.size_slider.value()
         self.grid.setIconSize(QSize(s, s))
-        self.grid.setGridSize(QSize(s + 8, s + 8))
+        self.grid.setGridSize(QSize(s + 12, s + 12))
         self.model.set_icon_size(QSize(s, s))
 
     def _update_month(self) -> None:

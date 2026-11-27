@@ -7,13 +7,17 @@ from html import escape
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QPoint, QRect, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QGuiApplication, QPainter, QPixmap, QTextDocument
+from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QColor, QFont, QFontMetrics, QGuiApplication, QPainter, QPainterPath, QPixmap, QTextDocument,
+)
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QMenu, QSizePolicy, QVBoxLayout, QWidget,
 )
 
-from app.styles import Theme, sender_color
+from app import design, icons
+from app.design import name_color, sender_color
+from app.styles import Theme
 from database.models import MediaRow, MessageRow
 from database.repositories import media_label
 from database.search_engine import highlight_html
@@ -59,6 +63,7 @@ class AsyncImage(QLabel):
     """Image chargée en arrière-plan ; affiche un fond neutre en attendant."""
 
     clicked = Signal()
+    RADIUS = 10
 
     def __init__(self, path: Path | None, box: QSize, placeholder: QSize | None = None, parent=None) -> None:
         super().__init__(parent)
@@ -67,7 +72,7 @@ class AsyncImage(QLabel):
         self._key: str | None = None
         self.failed = False
         self.setFixedSize(placeholder or QSize(box.width(), int(box.width() * 0.66)))
-        self.setStyleSheet("background: rgba(128,128,128,0.18); border-radius: 8px;")
+        self.setStyleSheet(f"background: {design.current().panel}; border-radius: {self.RADIUS}px;")
         if path is not None:
             loader = ThumbnailLoader.instance()
             self._key, pm = loader.request(path, box)
@@ -94,12 +99,29 @@ class AsyncImage(QLabel):
             pm = pm.scaled(self.box, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.setStyleSheet("")
         self.setFixedSize(pm.size())
-        self.setPixmap(pm)
+        self.setPixmap(rounded(pm, self.RADIUS))
 
     def mouseReleaseEvent(self, e) -> None:  # noqa: N802
         if e.button() == Qt.LeftButton:
             self.clicked.emit()
         super().mouseReleaseEvent(e)
+
+
+def rounded(pm: QPixmap, radius: float) -> QPixmap:
+    """Copie de l'image aux coins arrondis."""
+    out = QPixmap(pm.size())
+    out.setDevicePixelRatio(pm.devicePixelRatio())
+    out.fill(Qt.transparent)
+    p = QPainter(out)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setRenderHint(QPainter.SmoothPixmapTransform)
+    path = QPainterPath()
+    ratio = pm.devicePixelRatio()
+    path.addRoundedRect(QRectF(0, 0, pm.width() / ratio, pm.height() / ratio), radius, radius)
+    p.setClipPath(path)
+    p.drawPixmap(0, 0, pm)
+    p.end()
+    return out
 
 
 class VideoThumb(AsyncImage):
@@ -110,17 +132,17 @@ class VideoThumb(AsyncImage):
         self.badge, self.note = badge, note
         super().__init__(path, box, placeholder, parent)
         if path is None:
-            self.setStyleSheet("background: #1f2933; border-radius: 8px;")
+            self.setStyleSheet(f"background: #1C2636; border-radius: {self.RADIUS}px;")
 
     def paintEvent(self, e) -> None:  # noqa: N802
         super().paintEvent(e)
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         r = self.rect()
-        d = min(54, r.height() // 2)
+        d = min(56, r.height() // 2)
         c = QRect(r.center().x() - d // 2, r.center().y() - d // 2, d, d)
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(0, 0, 0, 140))
+        p.setBrush(QColor(10, 16, 28, 150))
         p.drawEllipse(c)
         p.setBrush(QColor("white"))
         tri = [QPoint(c.left() + d * 0.38, c.top() + d * 0.28), QPoint(c.left() + d * 0.38, c.bottom() - d * 0.28),
@@ -133,9 +155,9 @@ class VideoThumb(AsyncImage):
             if not text:
                 continue
             w = fm.horizontalAdvance(text) + 12
-            rect = QRect(6, y if y is not None else r.bottom() - fm.height() - 8, w, fm.height() + 4)
-            p.setBrush(QColor(0, 0, 0, 150))
-            p.drawRoundedRect(rect, 6, 6)
+            rect = QRect(8, y + 2 if y is not None else r.bottom() - fm.height() - 10, w, fm.height() + 4)
+            p.setBrush(QColor(10, 16, 28, 165))
+            p.drawRoundedRect(rect, 7, 7)
             p.setPen(QColor("white"))
             p.drawText(rect, Qt.AlignCenter, text)
             p.setPen(Qt.NoPen)
@@ -155,12 +177,22 @@ class ClickableFrame(QFrame):
         super().mouseReleaseEvent(e)
 
 
-def missing_widget(label: str, path: str | None) -> QLabel:
-    w = QLabel(f"⚠ {label} introuvable" + (f"<br><small>{escape(path)}</small>" if path else ""))
+def missing_widget(label: str, path: str | None) -> QWidget:
+    """Indication explicite d'un fichier absent de l'export (jamais masquée)."""
+    w = QFrame()
     w.setObjectName("Missing")
-    w.setTextFormat(Qt.RichText)
-    w.setWordWrap(True)
     w.setToolTip("Le fichier référencé par l'export n'existe pas à cet emplacement.")
+    lay = QHBoxLayout(w)
+    lay.setContentsMargins(10, 8, 12, 8)
+    lay.setSpacing(10)
+    ic = QLabel()
+    ic.setPixmap(icons.pixmap("alert", design.current().danger, 18))
+    lay.addWidget(ic, 0, Qt.AlignTop)
+    txt = QLabel(f"<b>{escape(label)} introuvable</b>" + (f"<br><small>{escape(path)}</small>" if path else ""))
+    txt.setTextFormat(Qt.RichText)
+    txt.setWordWrap(True)
+    txt.setStyleSheet(f"color: {design.current().danger}; background: transparent; border: none;")
+    lay.addWidget(txt, 1)
     return w
 
 
@@ -175,18 +207,25 @@ def file_card(m: MediaRow, ctx: RenderContext) -> QWidget:
     card = ClickableFrame()
     card.setObjectName("FileCard")
     lay = QHBoxLayout(card)
-    lay.setContentsMargins(8, 6, 10, 6)
-    icon = QLabel(ICONS.get(m.media_type, "📎"))
-    f = QFont(ctx.font)
-    f.setPointSizeF(ctx.font.pointSizeF() * 1.8)
-    icon.setFont(f)
-    lay.addWidget(icon)
+    lay.setContentsMargins(8, 8, 12, 8)
+    lay.setSpacing(10)
+    t = design.current()
+    missing = bool(m.file_path and not m.not_included and not m.file_available)
+    icon = QLabel()
+    icon.setObjectName("FileIcon")
+    icon.setProperty("missing", missing)
+    side = int(40 * ctx.scale)
+    icon.setFixedSize(side, side)
+    icon.setAlignment(Qt.AlignCenter)
+    icon.setPixmap(icons.pixmap("alert" if missing else icons.MEDIA_ICONS.get(m.media_type, "file"),
+                                t.danger if missing else t.accent, int(20 * ctx.scale)))
+    lay.addWidget(icon, 0, Qt.AlignTop)
     col = QVBoxLayout()
-    col.setSpacing(0)
+    col.setSpacing(1)
     title = m.title or (Path(m.file_path).name if m.file_path else media_label(m.media_type) or "Fichier")
-    t = QLabel(f"<b>{escape(title)}</b>")
-    t.setWordWrap(True)
-    col.addWidget(t)
+    title_lbl = QLabel(f"<b>{escape(title)}</b>")
+    title_lbl.setWordWrap(True)
+    col.addWidget(title_lbl)
     details = [x for x in (m.description, m.status) if x]
     if m.file_available and m.abs_file is not None:
         details.append(human_size(m.abs_file.stat().st_size))
@@ -202,7 +241,7 @@ def file_card(m: MediaRow, ctx: RenderContext) -> QWidget:
             card.setToolTip(f"Ouvrir avec l'application du système\n{m.file_path}")
             card.clicked.connect(lambda: open_with_system(m.abs_file))
         else:
-            warn = QLabel(f"⚠ fichier introuvable : {escape(m.file_path)}")
+            warn = QLabel(f"Fichier introuvable : {escape(m.file_path)}")
             warn.setStyleSheet(f"color: {ctx.theme.missing};")
             warn.setFont(small_font(ctx.font))
             warn.setWordWrap(True)
@@ -296,13 +335,15 @@ class PillRow(RowWidget):
     def __init__(self, msg: MessageRow, ctx: RenderContext, parent=None) -> None:
         super().__init__(msg, parent)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 8, 0, 8)
+        lay.setContentsMargins(24, 12, 24, 10)
+        lay.setSpacing(12)
         if msg.kind == "date_separator":
             text = day_long(msg.separator_date) if msg.separator_date else (msg.service_text or "")
         else:
             text = msg.service_text or msg.text
-        pill = QLabel(escape(text))
+        pill = QLabel(escape(text[:1].upper() + text[1:]) if msg.kind == "date_separator" else escape(text))
         pill.setObjectName("Pill")
+        pill.setProperty("service", msg.kind == "service")
         pill.setWordWrap(msg.kind == "service")
         pill.setAlignment(Qt.AlignCenter)
         pill.setFont(small_font(ctx.font, 0.9))
@@ -312,9 +353,20 @@ class PillRow(RowWidget):
             if msg.reply_to_message_id is not None:
                 pill.setCursor(Qt.PointingHandCursor)
                 pill.mouseReleaseEvent = lambda e: ctx.on_reply(msg)  # type: ignore[assignment]
-        lay.addStretch(1)
-        lay.addWidget(pill)
-        lay.addStretch(1)
+        if msg.kind == "date_separator":
+            for side in (0, 1):
+                rule = QFrame()
+                rule.setObjectName("DayRule")
+                rule.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                if side == 0:
+                    lay.addWidget(rule, 1)
+                    lay.addWidget(pill)
+                else:
+                    lay.addWidget(rule, 1)
+        else:
+            lay.addStretch(1)
+            lay.addWidget(pill)
+            lay.addStretch(1)
         self.highlight_target = pill
         self.pill = pill
 
@@ -333,8 +385,8 @@ class MessageBubbleRow(RowWidget):
         av_size = int(self.AVATAR * ctx.scale)
 
         row = QHBoxLayout(self)
-        row.setContentsMargins(10, 1 if msg.is_joined else 5, 10, 1)
-        row.setSpacing(8)
+        row.setContentsMargins(20, 2 if msg.is_joined else 8, 20, 1)
+        row.setSpacing(10)
 
         # Avatar (messages reçus, premier d'un groupe)
         avatar = QLabel()
@@ -342,7 +394,9 @@ class MessageBubbleRow(RowWidget):
         if not outgoing and not msg.is_joined:
             avatar.setText((msg.sender_initials or (msg.sender or "?")[:1]).upper())
             avatar.setAlignment(Qt.AlignCenter)
-            avatar.setStyleSheet(f"background:{color}; color:white; border-radius:{av_size // 2}px; font-weight:bold;")
+            c0, c1 = QColor(color).lighter(112).name(), QColor(color).darker(106).name()
+            avatar.setStyleSheet(f"background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {c0}, stop:1 {c1});"
+                                 f" color: white; border-radius: {av_size // 2}px; font-weight: bold;")
             avatar.setToolTip(msg.sender or "")
 
         bubble = QFrame()
@@ -356,18 +410,20 @@ class MessageBubbleRow(RowWidget):
         self.highlight_target = bubble
 
         col = QVBoxLayout(bubble)
-        col.setContentsMargins(10, 6, 10, 5)
-        col.setSpacing(4)
+        col.setContentsMargins(13, 9, 13, 7)
+        col.setSpacing(6)
 
         if not outgoing and not msg.is_joined and msg.sender:
-            name = QLabel(f"<b>{escape(msg.sender)}</b>"
-                          + (f" <span style='color:{ctx.theme.muted}'>via {escape(msg.via_bot)}</span>"
-                             if msg.via_bot else ""))
-            name.setStyleSheet(f"color: {color};")
+            name = QLabel(f"{escape(msg.sender)}"
+                          + (f" <span style='color:{ctx.theme.muted}; font-weight:normal'>via "
+                             f"{escape(msg.via_bot)}</span>" if msg.via_bot else ""))
+            name.setObjectName("SenderName")
+            name.setFont(small_font(ctx.font, 0.94))
+            name.setStyleSheet(f"color: {name_color(msg.sender_userpic, msg.sender, ctx.theme)};")
             col.addWidget(name)
 
         if msg.forwarded_from:
-            fw = QLabel(f"Transféré de <b>{escape(msg.forwarded_from)}</b>")
+            fw = QLabel(f"↪ Transféré de <b>{escape(msg.forwarded_from)}</b>")
             fw.setObjectName("Forwarded")
             fw.setFont(small_font(ctx.font, 0.9))
             col.addWidget(fw)
@@ -438,7 +494,8 @@ class MessageBubbleRow(RowWidget):
         if self.ctx.terms:
             html = highlight_html(html, self.ctx.terms,
                                   f"<span style='background-color:{self.ctx.theme.highlight}'>")
-        content = f"<style>a {{ color: {link_color}; }}</style>{soft_wrap_html(html)}"
+        content = (f"<style>a {{ color: {link_color}; text-decoration: none; }}</style>"
+                   f"<div style='line-height:138%'>{soft_wrap_html(html)}</div>")
         lbl.setText(content)
         doc = QTextDocument()
         doc.setDefaultFont(self.ctx.font)
@@ -457,15 +514,16 @@ class MessageBubbleRow(RowWidget):
         q = ClickableFrame()
         q.setObjectName("Quote")
         lay = QVBoxLayout(q)
-        lay.setContentsMargins(8, 3, 8, 3)
-        lay.setSpacing(0)
+        lay.setContentsMargins(10, 5, 10, 6)
+        lay.setSpacing(1)
         who = QLabel(f"<b>{escape(rep.sender or 'Message cité')}</b>")
-        who.setStyleSheet(f"color: {self.ctx.theme.accent};")
+        who.setStyleSheet(f"color: {self.ctx.theme.accent_text};")
         who.setFont(small_font(self.ctx.font, 0.9))
         excerpt = (rep.text or media_label(rep.media_type) or "").replace("\n", " ")
         fm = QFontMetrics(small_font(self.ctx.font, 0.9))
         ex = QLabel(fm.elidedText(excerpt, Qt.ElideRight, int(self.ctx.bubble_max_width * 0.8)))
         ex.setFont(small_font(self.ctx.font, 0.9))
+        ex.setProperty("muted", True)
         lay.addWidget(who)
         lay.addWidget(ex)
         if rep.seq is not None:

@@ -17,11 +17,13 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from app import design, icons
 from app.styles import Theme
 from database.db_manager import Database
 from database.repositories import LibraryRepository, media_label
 from services.statistics_service import Statistics, compute, weekday_label
 
+from .components import dialog_header
 from .formatting import MOIS_COURTS, day_medium, month_label, plural
 
 
@@ -94,7 +96,7 @@ class BarChart(QWidget):
         p.setPen(QColor(t.muted))
         for frac in (0, 0.5, 1):
             y = plot.bottom() - frac * plot.height()
-            p.setPen(QColor(t.bubble_border))
+            p.setPen(QColor(t.border))
             p.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
             p.setPen(QColor(t.muted))
             p.drawText(QRectF(0, y - fm.height() / 2, plot.left() - 6, fm.height()), Qt.AlignRight | Qt.AlignVCenter,
@@ -210,7 +212,7 @@ class Heatmap(QWidget):
         self.theme = theme
         self.grid = [[0] * 24 for _ in range(7)]
         self.setMouseTracking(True)
-        self.setMinimumHeight(7 * 22 + 40)
+        self.setMinimumHeight(7 * 24 + 44)
 
     def set_data(self, grid: list[list[int]]) -> None:
         self.grid = grid
@@ -220,14 +222,13 @@ class Heatmap(QWidget):
         fm = QFontMetrics(self.font())
         left = max(fm.horizontalAdvance(weekday_label(d)) for d in range(7)) + 12
         cell_w = (self.width() - left - 4) / 24
-        cell_h = 22
+        cell_h = 24
         return left, cell_w, cell_h
 
     def _color(self, v: int, vmax: int) -> QColor:
         if v == 0:
-            c = QColor(self.theme.bubble_border)
-            return c
-        a, b = QColor(self.theme.chat_bg), QColor(self.theme.accent)
+            return QColor(self.theme.panel)
+        a, b = QColor(self.theme.accent_soft), QColor(self.theme.accent)
         t = 0.18 + 0.82 * (v / vmax)
         return QColor(int(a.red() + (b.red() - a.red()) * t), int(a.green() + (b.green() - a.green()) * t),
                       int(a.blue() + (b.blue() - a.blue()) * t))
@@ -244,7 +245,7 @@ class Heatmap(QWidget):
             for h in range(24):
                 rect = QRectF(left + h * cw + 1, d * ch + 1, cw - 2, ch - 2)
                 path = QPainterPath()
-                path.addRoundedRect(rect, 3, 3)
+                path.addRoundedRect(rect, 4, 4)
                 p.fillPath(path, self._color(self.grid[d][h], vmax))
         p.setPen(QColor(self.theme.muted))
         for h in range(0, 24, 3):
@@ -274,35 +275,59 @@ class Heatmap(QWidget):
             QToolTip.hideText()
 
 
+KPI_STYLE = {   # pictogramme et teinte de chaque indicateur (couleurs de la palette, avec parcimonie)
+    "messages": ("chat", "accent"), "jours actifs": ("calendar", "turquoise"),
+    "messages par jour actif": ("chart", "violet"), "jour le plus actif": ("timeline", "accent"),
+    "jours d'affilée (record)": ("refresh", "turquoise"), "jours de silence (record)": ("clock", "violet"),
+}
+
+
 def _tile(value: str, label: str, detail: str = "") -> QFrame:
-    f = QFrame()
-    f.setObjectName("FileCard")
-    lay = QVBoxLayout(f)
-    lay.setContentsMargins(12, 8, 12, 8)
-    lay.setSpacing(0)
-    v = QLabel(value)
-    font = QFont(v.font())
-    font.setPointSizeF(font.pointSizeF() * 1.7)
-    font.setBold(True)
-    v.setFont(font)
-    lab = QLabel(label)
-    lab.setProperty("muted", True)
-    lay.addWidget(v)
-    lay.addWidget(lab)
-    if detail:
-        d = QLabel(detail)
-        d.setProperty("muted", True)
-        d.setWordWrap(True)
-        lay.addWidget(d)
+    """Carte d'indicateur : pictogramme teinté, valeur en grand, libellé et détail."""
+    th = design.current()
+    f = QFrame(objectName="KpiCard")
+    lay = QHBoxLayout(f)
+    lay.setContentsMargins(16, 14, 16, 14)
+    lay.setSpacing(14)
+    icon_name, tone = KPI_STYLE.get(label, ("chart", "accent"))
+    base = QColor(getattr(th, tone))
+    soft = QColor(base)
+    soft.setAlpha(36 if th.dark else 26)
+    ic = QLabel(objectName="KpiIcon", alignment=Qt.AlignCenter)
+    ic.setFixedSize(42, 42)
+    ic.setStyleSheet(f"background: rgba({soft.red()},{soft.green()},{soft.blue()},{soft.alphaF():.2f}); "
+                     f"border-radius: 12px;")
+    ic.setPixmap(icons.pixmap(icon_name, base.name(), 22))
+    lay.addWidget(ic, 0, Qt.AlignTop)
+    col = QVBoxLayout()
+    col.setSpacing(1)
+    v = QLabel(value, objectName="KpiValue")
+    lab = QLabel(label[:1].upper() + label[1:], objectName="KpiLabel")
+    col.addWidget(v)
+    col.addWidget(lab)
+    d = QLabel(detail or " ", objectName="KpiDetail")
+    d.setWordWrap(True)
+    col.addWidget(d)
+    lay.addLayout(col, 1)
     return f
 
 
 def _section(title: str, widget: QWidget, note: str = "") -> QWidget:
-    w = QWidget()
+    """Carte de graphique : titre, note discrète, contenu."""
+    w = QFrame(objectName="ChartCard")
     lay = QVBoxLayout(w)
-    lay.setContentsMargins(0, 8, 0, 0)
-    t = QLabel(f"<b>{escape(title)}</b>" + (f" <span style='color:gray'>— {escape(note)}</span>" if note else ""))
-    lay.addWidget(t)
+    lay.setContentsMargins(18, 14, 18, 16)
+    lay.setSpacing(10)
+    head = QHBoxLayout()
+    t = QLabel(escape(title))
+    t.setProperty("role", "section")
+    head.addWidget(t)
+    if note:
+        n = QLabel(escape(note))
+        n.setProperty("role", "caption")
+        head.addWidget(n)
+    head.addStretch(1)
+    lay.addLayout(head)
     lay.addWidget(widget)
     return w
 
@@ -330,10 +355,13 @@ class StatisticsWindow(QDialog):
             c.setMinimumContentsLength(16)
             c.currentIndexChanged.connect(self.refresh)
         top = QHBoxLayout()
-        top.addWidget(QLabel("Portée"))
+        top.setSpacing(8)
+        top.addWidget(dialog_header("Statistiques", "Activité, rythmes et participants", "chart"), 1)
+        scope = QLabel("Portée")
+        scope.setProperty("muted", True)
+        top.addWidget(scope)
         top.addWidget(self.conv)
         top.addWidget(self.sender)
-        top.addStretch(1)
 
         self.tiles = QGridLayout()
         self.months = BarChart(theme)
@@ -349,15 +377,20 @@ class StatisticsWindow(QDialog):
 
         body = QWidget()
         b = QVBoxLayout(body)
+        b.setContentsMargins(20, 6, 14, 20)
+        b.setSpacing(14)
+        self.tiles.setSpacing(12)
         b.addLayout(self.tiles)
         self.month_section = _section("Messages par mois", self.months)
         b.addWidget(self.month_section)
         row = QHBoxLayout()
+        row.setSpacing(14)
         row.addWidget(_section("Par heure de la journée", self.hours), 3)
         row.addWidget(_section("Par jour de la semaine", self.weekdays), 2)
         b.addLayout(row)
         b.addWidget(_section("Rythme de la semaine", self.heat, "jour × heure"))
         row2 = QHBoxLayout()
+        row2.setSpacing(14)
         row2.addWidget(_section("Expéditeurs", self.senders), 1)
         row2.addWidget(_section("Médias et liens", self.media), 1)
         b.addLayout(row2)
@@ -369,9 +402,13 @@ class StatisticsWindow(QDialog):
         area.setFrameShape(QFrame.NoFrame)
 
         lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 18, 0, 0)
+        lay.setSpacing(12)
+        top.setContentsMargins(20, 0, 20, 0)
         lay.addLayout(top)
         lay.addWidget(area, 1)
-        self.resize(1050, 860)
+        self.setMinimumSize(760, 560)
+        self.resize(1120, 880)
         self.refresh()
 
     def set_conversation(self, conv_id: str | None) -> None:
@@ -419,18 +456,28 @@ class StatisticsWindow(QDialog):
         self.senders.set_data(st.per_sender)
         media_rows = [(media_label(t) or t, n) for t, n in st.media.items()]
         if st.links:
-            media_rows.append(("🔗 Liens", st.links))
+            media_rows.append(("Liens", st.links))
         self.media.set_data(sorted(media_rows, key=lambda r: -r[1]))
         if st.top_words:
             top = st.top_words[0][1]
             parts = []
             for w, n in st.top_words:
                 size = 90 + int(70 * n / top)
-                parts.append(f"<span style='font-size:{size}%' title='{n}'>{escape(w)}</span>"
-                             f"<span style='color:gray; font-size:80%'>&nbsp;{n}</span>")
-            self.words.setText(" &nbsp; ".join(parts))
+                th = design.current()
+                weight = 600 if n >= top * 0.5 else 400
+                color = th.accent_text if n >= top * 0.6 else th.text
+                parts.append(f"<span style='font-size:{size}%; font-weight:{weight}; color:{color}' "
+                             f"title='{n}'>{escape(w)}</span>"
+                             f"<span style='color:{th.faint}; font-size:78%'>&nbsp;{n}</span>")
+            self.words.setText("<div style='line-height:170%'>" + " &nbsp;&nbsp; ".join(parts) + "</div>")
         else:
             self.words.setText("—")
+
+    def retheme(self, theme: Theme) -> None:
+        self.theme = theme
+        for chart in (self.months, self.hours, self.weekdays, self.senders, self.media, self.heat):
+            chart.theme = theme
+        self.refresh()
 
     def _month_clicked(self, i: int) -> None:
         conv_id = self.conv.currentData()

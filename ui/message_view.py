@@ -11,12 +11,14 @@ from __future__ import annotations
 from datetime import date
 
 from PySide6.QtCore import QDate, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QFont, QTextCharFormat
+from PySide6.QtGui import QColor, QFont, QTextCharFormat
 from PySide6.QtWidgets import (
     QCalendarWidget, QDialog, QDialogButtonBox, QFrame, QHBoxLayout, QLabel, QMenu, QScrollArea,
     QSizePolicy, QToolButton, QVBoxLayout, QWidget,
 )
 
+from app import icons
+from app.design import sender_color
 from app.styles import Theme
 from database.models import ConversationSummary, MediaRow, MessageRow
 from database.repositories import LibraryRepository
@@ -24,6 +26,7 @@ from database.search_engine import SearchEngine
 from services.media_service import open_url
 from services.navigation_service import Location, NavigationHistory
 
+from .components import ElidedLabel, dialog_header
 from .find_bar import FindBar
 from .timeline import neighbour_day
 from .formatting import MOIS, day_long, month_label, period, plural
@@ -34,6 +37,7 @@ PAGE = 60
 MAX_ROWS = 400
 EDGE_PX = 600
 SETTLE_MS = 250         # durée de stabilisation après un saut
+READING_MAX = 1060      # largeur maximale de la colonne de lecture
 TOP_MARGIN = 8          # marge au-dessus d'une ligne positionnée « en haut »
 
 
@@ -68,7 +72,11 @@ class DateDialog(QDialog):
         bb.button(QDialogButtonBox.Cancel).setText("Annuler")
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
+        bb.button(QDialogButtonBox.Ok).setProperty("variant", "primary")
         lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 18, 20, 14)
+        lay.setSpacing(10)
+        lay.addWidget(dialog_header("Aller à la date", "", "calendar"))
         lay.addWidget(self.cal)
         lay.addWidget(info)
         lay.addWidget(bb)
@@ -109,13 +117,13 @@ class MessageView(QWidget):
         self.area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.container = QWidget()
         self.vbox = QVBoxLayout(self.container)
-        self.vbox.setContentsMargins(0, 8, 0, 12)
+        self.vbox.setContentsMargins(0, 12, 0, 18)
         self.vbox.setSpacing(0)
         self.vbox.addStretch(1)       # pousse les messages vers le bas s'ils sont peu nombreux
         self.area.setWidget(self.container)
 
         self.empty = QLabel("Sélectionnez une conversation dans la liste de gauche.", alignment=Qt.AlignCenter)
-        self.empty.setProperty("muted", True)
+        self.empty.setObjectName("EmptyState")
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -146,43 +154,82 @@ class MessageView(QWidget):
     def _build_header(self) -> None:
         self.header = QWidget()
         self.header.setObjectName("ChatHeader")
-        self.title = QLabel(objectName="ChatTitle")
-        self.subtitle = QLabel()
-        self.subtitle.setProperty("muted", True)
+        self.header.setFixedHeight(62)
+        self.avatar = QLabel(alignment=Qt.AlignCenter)
+        self.avatar.setFixedSize(38, 38)
+        self.title = ElidedLabel(objectName="ChatTitle")
+        self.subtitle = ElidedLabel()
+        self.subtitle.setProperty("role", "caption")
         for lbl in (self.title, self.subtitle):
             lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)   # n'impose pas de largeur
         tl = QVBoxLayout()
-        tl.setSpacing(0)
+        tl.setSpacing(1)
+        tl.addStretch(1)
         tl.addWidget(self.title)
         tl.addWidget(self.subtitle)
+        tl.addStretch(1)
 
-        self.date_badge = QToolButton(toolTip="Date affichée — cliquer pour choisir une autre date")
+        def tool(icon_name: str, tip: str, slot=None, text: str = "") -> QToolButton:
+            b = QToolButton(text=text, toolTip=tip)
+            b.setAccessibleName(tip.split(" (")[0])
+            b.setCursor(Qt.PointingHandCursor)
+            icons.bind(b, icon_name, "muted", 18)
+            if slot:
+                b.clicked.connect(slot)
+            return b
+
+        self.date_badge = QToolButton(toolTip="Date affichée — cliquer pour choisir une autre date (Ctrl+G)")
+        self.date_badge.setObjectName("DateBadge")
+        self.date_badge.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.date_badge.setCursor(Qt.PointingHandCursor)
+        icons.bind(self.date_badge, "calendar", "accent", 15, "accent", "accent")
         self.date_badge.clicked.connect(self.choose_date)
-        self.back_btn = QToolButton(text="←", toolTip="Revenir à la position précédente (Alt+←)")
-        self.back_btn.clicked.connect(self.go_back)
+        self.back_btn = tool("back", "Revenir à la position précédente (Alt+←)", self.go_back)
         self.back_btn.setEnabled(False)
-        self.month_btn = QToolButton(text="Mois ▾", toolTip="Naviguer par année et par mois")
+        self.month_btn = QToolButton(text="Mois", toolTip="Naviguer par année et par mois")
+        self.month_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.month_btn.setCursor(Qt.PointingHandCursor)
+        icons.bind(self.month_btn, "list", "muted", 16)
         self.month_btn.setPopupMode(QToolButton.InstantPopup)
         self.month_menu = QMenu(self.month_btn)
         self.month_btn.setMenu(self.month_menu)
         self.month_menu.aboutToShow.connect(self._fill_month_menu)
-        find = QToolButton(text="🔍", toolTip="Rechercher dans cette conversation (Ctrl+F)")
-        find.clicked.connect(self.open_find_bar)
-        cal = QToolButton(text="📅", toolTip="Aller à une date (Ctrl+G)")
-        cal.clicked.connect(self.choose_date)
-        top = QToolButton(text="⤒", toolTip="Premier message (Ctrl+Début)")
-        top.clicked.connect(self.go_first)
-        bottom = QToolButton(text="⤓", toolTip="Dernier message (Ctrl+Fin)")
-        bottom.clicked.connect(self.go_last)
-        self.info_btn = QToolButton(text="ⓘ", toolTip="Afficher / masquer le panneau d'informations (Ctrl+I)")
+        find = tool("search", "Rechercher dans cette conversation (Ctrl+F)", self.open_find_bar)
+        top = tool("first", "Premier message (Ctrl+Début)", self.go_first)
+        bottom = tool("last", "Dernier message (Ctrl+Fin)", self.go_last)
+        self.info_btn = tool("info", "Afficher / masquer le panneau d'informations (Ctrl+I)", self.toggle_info_panel)
         self.info_btn.setCheckable(True)
-        self.info_btn.clicked.connect(self.toggle_info_panel)
+
+        def sep() -> QFrame:
+            s = QFrame()
+            s.setProperty("separator", True)
+            s.setFixedSize(1, 22)
+            return s
 
         h = QHBoxLayout(self.header)
-        h.setContentsMargins(14, 6, 8, 6)
+        h.setContentsMargins(18, 0, 12, 0)
+        h.setSpacing(4)
+        h.addWidget(self.avatar)
+        h.addSpacing(8)
         h.addLayout(tl, 1)
-        for w in (self.date_badge, self.back_btn, find, self.month_btn, cal, top, bottom, self.info_btn):
+        h.addWidget(self.date_badge)
+        h.addSpacing(6)
+        for w in (self.back_btn, find, self.month_btn, top, bottom):
             h.addWidget(w)
+        h.addSpacing(4)
+        h.addWidget(sep())
+        h.addSpacing(4)
+        h.addWidget(self.info_btn)
+
+    def _paint_avatar(self) -> None:
+        if not self.conv:
+            return
+        color = sender_color(None, self.conv.name)
+        self.avatar.setText((self.conv.name[:1] or "?").upper())
+        self.avatar.setStyleSheet(
+            f"background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {QColor(color).lighter(112).name()}, "
+            f"stop:1 {QColor(color).darker(106).name()}); color: white; border-radius: 19px; "
+            f"font-weight: 700; font-size: 12pt;")
 
     # ------------------------------------------------------------------ #
     # API
@@ -220,6 +267,7 @@ class MessageView(QWidget):
         self.bounds = self.repo.seq_bounds(conv.id)
         n_part = len(self.repo.participants(conv.id))
         self.title.setText(conv.name)
+        self._paint_avatar()
         self.subtitle.setText(f"{plural(conv.message_count, 'message')} · {plural(n_part, 'participant')} · "
                               f"{period(conv.first_date, conv.last_date)}")
         if self.bounds is None:
@@ -322,7 +370,8 @@ class MessageView(QWidget):
 
     def _bubble_width(self) -> int:
         vw = self.area.viewport().width() if self.area.isVisible() else 900
-        return max(260, min(int(620 * self.zoom / 100), int(vw * 0.72)))
+        vw = min(vw, READING_MAX)
+        return max(260, min(int(620 * self.zoom / 100), int(vw * 0.74)))
 
     def _clear(self) -> None:
         for r in self.rows:
@@ -494,6 +543,7 @@ class MessageView(QWidget):
         row = self._first_visible_row()
         day = row.msg.day if row else None
         self.date_badge.setText(day_long(day) if day else "Aller à la date")
+        self.date_badge.setToolTip(f"{self.date_badge.text()} — cliquer pour choisir une autre date (Ctrl+G)")
         if day and day != getattr(self, "_last_day", None):
             self._last_day = day
             self.day_changed.emit(day)
@@ -521,6 +571,16 @@ class MessageView(QWidget):
 
     def resizeEvent(self, e) -> None:  # noqa: N802
         super().resizeEvent(e)
+        # Colonne de lecture centrée sur les grands écrans (lignes de longueur confortable)
+        vw = self.area.viewport().width()
+        side = max(0, (vw - READING_MAX) // 2)
+        self.vbox.setContentsMargins(side, 12, side, 18)
+        # En-tête compact : date et « Mois » réduits à leur pictogramme (texte en info-bulle)
+        compact = self.width() < 820
+        style = Qt.ToolButtonIconOnly if compact else Qt.ToolButtonTextBesideIcon
+        for b in (self.date_badge, self.month_btn):
+            if b.toolButtonStyle() != style:
+                b.setToolButtonStyle(style)
         w = self._bubble_width()
         for r in self.rows:
             r.set_bubble_width(w)

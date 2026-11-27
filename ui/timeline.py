@@ -5,8 +5,10 @@ from __future__ import annotations
 from datetime import date
 
 from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPalette
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath
 from PySide6.QtWidgets import QStyle, QStyledItemDelegate, QTreeWidget, QTreeWidgetItem
+
+from app import design
 
 from .formatting import JOURS, MOIS, plural
 
@@ -23,24 +25,39 @@ class DensityDelegate(QStyledItemDelegate):
         self.accent = accent
 
     def paint(self, p, option, index) -> None:
-        if index.column() != 1:
-            super().paint(p, option, index)
-            return
         super().paint(p, option, index)
+        if index.column() != 1:
+            return
+        th = design.current()
         n = index.data(ROLE_COUNT) or 0
         vmax = index.data(ROLE_MAX) or 1
-        r = option.rect.adjusted(4, 6, -60, -6)
-        w = max(r.width() * n / vmax, 2)
+        fm = option.fontMetrics
+        count_w = 44
+        track = QRectF(option.rect.left() + 4, option.rect.center().y() - 3, option.rect.width() - count_w - 12, 6)
+        w = max(track.width() * n / vmax, 4)
         p.save()
         p.setRenderHint(QPainter.Antialiasing)
-        path = QPainterPath()
-        path.addRoundedRect(QRectF(r.left(), r.top(), w, r.height()), 3, 3)
-        selected = bool(option.state & QStyle.State_Selected)
-        p.fillPath(path, QColor("white") if selected else QColor(self.accent))
-        p.setPen(QColor("white") if selected else option.palette.color(QPalette.PlaceholderText))
-        p.drawText(QRectF(r.left() + w + 6, option.rect.top(), 60, option.rect.height()),
-                   Qt.AlignLeft | Qt.AlignVCenter, f"{n:,}".replace(",", " "))
+        bg = QPainterPath()
+        bg.addRoundedRect(track, 3, 3)
+        p.fillPath(bg, QColor(th.panel if not (option.state & QStyle.State_Selected) else th.surface))
+        bar = QPainterPath()
+        bar.addRoundedRect(QRectF(track.left(), track.top(), w, track.height()), 3, 3)
+        p.fillPath(bar, QColor(self.accent))
+        p.setPen(QColor(th.muted))
+        p.drawText(QRectF(track.right() + 6, option.rect.top(), count_w, option.rect.height()),
+                   Qt.AlignRight | Qt.AlignVCenter, f"{n:,}".replace(",", "\u202f"))
         p.restore()
+
+    def sizeHint(self, option, index):  # noqa: N802
+        s = super().sizeHint(option, index)
+        s.setHeight(max(s.height(), 30))
+        return s
+
+
+def reduced_motion() -> bool:
+    """Préférence « réduire les animations » (variable d'environnement GNOME/Qt usuelle)."""
+    import os
+    return os.environ.get("TAE_REDUCE_MOTION", "") == "1" or os.environ.get("GTK_ENABLE_ANIMATIONS", "1") == "0"
 
 
 class Timeline(QTreeWidget):
@@ -51,7 +68,9 @@ class Timeline(QTreeWidget):
         self.setHeaderHidden(True)
         self.setColumnCount(2)
         self.setItemDelegate(DensityDelegate(accent, self))
-        self.setUniformRowHeights(True)
+        self.setUniformRowHeights(False)
+        self.setIndentation(14)
+        self.setAnimated(not reduced_motion())
         self.header().setStretchLastSection(True)
         self.header().setSectionResizeMode(0, self.header().ResizeMode.ResizeToContents)
         self.itemClicked.connect(self._clicked)
@@ -85,6 +104,11 @@ class Timeline(QTreeWidget):
 
     def _item(self, parent, label: str, n: int, vmax: int, day: str) -> QTreeWidgetItem:
         it = QTreeWidgetItem(parent or self, [label, ""])
+        if parent is None:                      # années : plus visibles
+            f = QFont(self.font())
+            f.setWeight(QFont.DemiBold)
+            f.setPointSizeF(f.pointSizeF() * 1.05)
+            it.setFont(0, f)
         it.setData(0, ROLE_DAY, day)
         it.setData(1, ROLE_COUNT, n)
         it.setData(1, ROLE_MAX, vmax)
