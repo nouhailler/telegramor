@@ -290,17 +290,29 @@ Les tests utilisent exclusivement des données synthétiques
 
 ## 14. CI
 
-Le workflow `.github/workflows/ci.yml` a été écrit et ses étapes ont été
-exécutées localement à l'identique : flake8, compilation, pytest,
-construction et inspection du paquet.
+Première exécution sur GitHub Actions (run 46078874886, commit `e564d18`) :
+**réussie** en 1 min 38 s. Toutes les étapes sont passées :
 
-**Son exécution sur GitHub Actions n'a pas encore eu lieu**, car rien n'est
-publié tant que l'utilisateur ne l'a pas demandé. Elle devra être vérifiée
-au premier push.
+- flake8 ;
+- compilation de tous les modules ;
+- pytest : **106 réussis, 56 ignorés** ;
+- construction du `.deb` et vérification de son contenu et de ses
+  métadonnées ;
+- installation réelle avec `apt-get` et contrôle des dépendances.
 
-L'installation par `apt-get install ./…deb` n'est faite qu'en CI (conteneur
-root). L'interface y est testée hors écran : son rendu visuel n'est pas
-vérifié.
+Les artefacts `paquet-debian` et `resultats-tests` sont conservés.
+
+Les 56 tests ignorés dépendent de la copie d'un export réel
+(`tests/fixtures/reference/messages.html`), volontairement non publiée, et
+d'un export complet présent seulement sur le poste de l'utilisateur. Ils
+passent localement (161 réussis). Toutes les nouvelles fonctions de la 1.3
+sont testées sur données synthétiques et s'exécutent donc en CI.
+
+GitHub signale que `actions/checkout@v4` et `actions/upload-artifact@v4`
+visent Node.js 20, désormais déprécié. C'est sans effet aujourd'hui, mais à
+mettre à jour lors d'une prochaine version de ces actions.
+
+L'interface est testée hors écran : son rendu visuel n'est pas vérifié en CI.
 
 ## 15. Validations fonctionnelles
 
@@ -350,8 +362,9 @@ de test). Le rendu sur l'écran de l'utilisateur reste à vérifier.
 
 ## 17. Recommandations pour la prochaine version
 
-1. Vérifier le premier passage de la CI sur GitHub, puis exiger son succès
-   avant toute fusion.
+1. Exiger le succès de la CI avant toute fusion, et fournir une fixture
+   d'export synthétique équivalente pour exécuter aussi en CI les 56 tests
+   qui dépendent de l'export réel.
 2. Recherche sémantique facultative :
    - fournisseur `SemanticProvider` reposant sur des embeddings locaux (modèle
      d'embeddings Ollama, ou `sentence-transformers` en option) ;
@@ -388,4 +401,4 @@ de test). Le rendu sur l'écran de l'utilisateur reste à vérifier.
 | Vérification des dépendances | Partielle | Terminal et fenêtre de composants | `test_services_v13`, `test_ui_v13` | Validé |
 | Mises à jour | Absente | Facultative, désactivée par défaut | `test_services_v13` (réseau simulé) | Partiellement validé (pas d'appel réel à GitHub en test) |
 | Packaging alternatif | Absent | Étude seulement | — | Reporté |
-| CI GitHub Actions | Absente | Workflow Debian 13 (tests, lint, `.deb`) | Étapes exécutées localement | Partiellement validé (premier passage GitHub à confirmer) |
+| CI GitHub Actions | Absente | Workflow Debian 13 (tests, lint, `.deb`) | Run 46078874886 réussi (106 réussis, 56 ignorés faute de fixture réelle) | Validé |
