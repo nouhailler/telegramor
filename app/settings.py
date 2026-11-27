@@ -115,5 +115,35 @@ class AppSettings:
         self.s.setValue("export/by_conversation", by_conversation)
         self.s.setValue("export/set_mtime", set_mtime)
 
+    # -- Mises à jour (facultatif, désactivé par défaut) ---------------------- #
+    @property
+    def auto_update_check(self) -> bool:
+        return self.s.value("update/auto_check", False, type=bool)
+
+    @auto_update_check.setter
+    def auto_update_check(self, v: bool) -> None:
+        self.s.setValue("update/auto_check", bool(v))
+
+    @property
+    def last_update_check(self) -> str | None:
+        return str(self.s.value("update/last_check", "")) or None
+
+    @last_update_check.setter
+    def last_update_check(self, v: str) -> None:
+        self.s.setValue("update/last_check", v)
+
+    # -- Composants facultatifs : signalés une fois par version ------------- #
+    @property
+    def deps_notified(self) -> str:
+        return str(self.s.value("deps/notified_version", ""))
+
+    @deps_notified.setter
+    def deps_notified(self, v: str) -> None:
+        self.s.setValue("deps/notified_version", v)
+
+    def file_path(self):
+        from pathlib import Path
+        return Path(self.s.fileName())
+
     def sync(self) -> None:
         self.s.sync()

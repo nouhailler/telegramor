@@ -10,7 +10,7 @@ from PySide6.QtGui import QColor, QFontMetrics, QGuiApplication, QPainter, QPain
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QDialog, QFileDialog, QFrame, QHBoxLayout, QHeaderView, QInputDialog,
     QLabel, QListWidget, QMessageBox, QPushButton, QSplitter, QStyledItemDelegate, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QVBoxLayout,
 )
 
 from app import design, icons

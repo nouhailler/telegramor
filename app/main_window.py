@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QLoggingCategory, QSize, Qt, QThread, Slot
+from PySide6.QtCore import QLoggingCategory, QSize, Qt, QThread, QTimer, Slot
 from PySide6.QtGui import QAction, QFontDatabase, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QDialog, QDialogButtonBox, QFileDialog, QFrame, QHBoxLayout, QInputDialog,
@@ -17,6 +17,7 @@ from database.repositories import LibraryRepository
 from database.search_engine import SearchEngine
 from services.indexing_service import ImportWorker, start_import
 from services.media_service import MULTIMEDIA_AVAILABLE
+from services.personal_data import PersonalData
 from ui.archive_library import ArchiveLibraryDialog
 from ui.conversation_list import ConversationList
 from ui.gallery_window import GalleryWindow
@@ -33,7 +34,7 @@ from .settings import ZOOM_STEPS, AppSettings
 from .styles import apply_theme, theme_for
 
 APP_NAME = "Telegram Archive Explorer"
-APP_VERSION = "1.2"
+APP_VERSION = "1.3"
 ICON_PATH = Path(__file__).parent / "resources" / "icon.svg"
 
 
@@ -143,6 +144,7 @@ class MainWindow(QMainWindow):
         self.settings = settings or AppSettings()
         self.db = Database(db_path)
         self.repo = LibraryRepository(self.db)
+        self.personal = PersonalData(self.db)
         self.theme = theme_for(self.settings.dark_mode)
         apply_theme(QApplication.instance(), self.theme)
         self._import_thread: QThread | None = None
@@ -160,6 +162,8 @@ class MainWindow(QMainWindow):
         self.message_view = MessageView(self.repo, self.theme, self.engine)
         self.message_view.zoom = self.settings.zoom
         self.message_view.internal_video = self.settings.internal_video_player
+        self.message_view.personal = self.personal
+        self.search_panel.personal = self.personal
         self.info_panel = InformationPanel(self.repo)
         self.info_panel.settings = self.settings
 
@@ -214,6 +218,9 @@ class MainWindow(QMainWindow):
         self.info_panel.timeline.set_accent(self.theme.accent)
 
         self.search_panel.hit_selected.connect(self.open_search_hit)
+        self.search_panel.text_applied.connect(lambda t: self.search_field.setText(t))
+        self.search_panel.export_requested.connect(self.export_search_results)
+        self.message_view.personal_action.connect(self._on_personal_action)
         self.search_panel.closed.connect(self.close_search)
         self.message_view.advanced_search_requested.connect(self.advanced_search_in)
         self._build_search_bar()
@@ -234,6 +241,9 @@ class MainWindow(QMainWindow):
         self.repo.backfill_file_hashes()       # archives importées avant la v2 du schéma
         self.refresh_library(restore=True)
         self._warn_missing_archives()
+        self._personal_window = None
+        self._update_thread = None
+        QTimer.singleShot(1500, self._startup_checks)
 
     # ================================================================== #
     # Menus
@@ -317,6 +327,7 @@ class MainWindow(QMainWindow):
         n.add("gallery", "Galerie", "image", "Galerie multimédia (Ctrl+M)", self.open_gallery)
         n.add("stats", "Statistiques", "chart", "Statistiques (Ctrl+Maj+S)", self.open_statistics)
         n.add("timeline", "Chronologie", "timeline", "Chronologie : années, mois, jours (Ctrl+T)", self.show_timeline)
+        n.add("personal", "Mon espace", "star", "Favoris, notes et collections (Ctrl+B)", self.open_personal)
         n.add("library", "Archives", "archive", "Bibliothèque des archives (Ctrl+L)", self.open_library)
         n.add("help", "Aide", "keyboard", "Raccourcis clavier (F1)", self.show_shortcuts, bottom=True)
         self.nav_conversations.setChecked(True)
@@ -344,6 +355,14 @@ class MainWindow(QMainWindow):
         self._add(m, "&Bibliothèque des archives…", self.open_library, "Ctrl+L")
         self._add(m, "&Galerie multimédia…", self.open_gallery, "Ctrl+M")
         self._add(m, "&Statistiques…", self.open_statistics, "Ctrl+Shift+S")
+        self._add(m, "&Mon espace : favoris, notes, collections…", self.open_personal, "Ctrl+B")
+        m.addSeparator()
+        self._add(m, "&Exporter la conversation…", self.export_conversation, "Ctrl+E")
+        self._add(m, "Imprimer la conversation…", self.print_conversation, "Ctrl+P")
+        m.addSeparator()
+        self._add(m, "Sauvegarde et restauration…", self.open_backup)
+        self._add(m, "Diagnostic de la bibliothèque…", self.open_diagnostics)
+        self._add(m, "Fichiers identiques…", self.open_duplicates)
         m.addSeparator()
         self._add(m, "&Quitter", self.close, QKeySequence.Quit)
 
@@ -377,6 +396,9 @@ class MainWindow(QMainWindow):
         self._add(g, "M&ois suivant", lambda: mv.step_day(1, "month"), "Ctrl+Shift+PgDown")
         self._add(g, "Afficher la &chronologie", self.show_timeline, "Ctrl+T")
         g.addSeparator()
+        self._add(g, "Reprendre la &lecture (premier message non consulté)", self.resume_reading, "Ctrl+R")
+        self._add(g, "Réinitialiser la lecture de cette conversation", self.message_view.reset_reading)
+        g.addSeparator()
         self._add(g, "Rechercher une &conversation", lambda: self.conv_list.search.setFocus(), "Ctrl+K")
 
         r = mb.addMenu("&Recherche")
@@ -387,6 +409,15 @@ class MainWindow(QMainWindow):
 
         h = mb.addMenu("Aid&e")
         self._add(h, "&Raccourcis clavier", self.show_shortcuts, "F1")
+        self._add(h, "Composants installés…", self.open_dependencies)
+        h.addSeparator()
+        self._add(h, "Rechercher une mise à &jour…", lambda: self.check_updates(manual=True))
+        self.act_auto_update = self._add(h, "Vérifier les mises à jour chaque semaine", self.toggle_auto_update,
+                                         checkable=True)
+        self.act_auto_update.setChecked(self.settings.auto_update_check)
+        self.act_auto_update.setToolTip("Désactivé par défaut. Une requête vers GitHub au plus une fois par semaine, "
+                                        "sans aucune donnée personnelle.")
+        h.addSeparator()
         self._add(h, "À &propos", self.about)
 
     def _add(self, menu, text, slot, shortcut=None, checkable=False) -> QAction:
@@ -452,14 +483,16 @@ class MainWindow(QMainWindow):
         if self.message_view.conv:
             win.set_conversation(self.message_view.conv.id)
         win.go_to_message.connect(self._go_to_message)
+        win.personal = self.personal
         win.show()
         self._gallery = win
 
     def open_statistics(self) -> None:
-        win = StatisticsWindow(self.db, self.repo, self.theme, self)
+        win = StatisticsWindow(self.db, self.repo, self.theme, self, settings=self.settings)
         if self.message_view.conv:
             win.set_conversation(self.message_view.conv.id)
         win.go_to_day.connect(self._go_to_day)
+        win.search_word.connect(lambda w: (self.search(w), self.raise_(), self.activateWindow()))
         win.show()
         self._statistics = win
 
@@ -781,7 +814,11 @@ class MainWindow(QMainWindow):
                 ("Mois précédent / suivant", "Ctrl+Maj+PgPréc / PgSuiv"), ("Chronologie", "Ctrl+T"),
                 ("Premier / dernier message", "Ctrl+Début / Ctrl+Fin"), ("Revenir après un saut", "Alt+←"),
                 ("Panneau d'informations", "Ctrl+I"), ("Zoom avant / arrière / normal", "Ctrl++ / Ctrl+− / Ctrl+0"),
-                ("Mode sombre", "Ctrl+Maj+D"), ("Fermer la recherche, une visionneuse", "Échap")]
+                ("Mode sombre", "Ctrl+Maj+D"), ("Fermer la recherche, une visionneuse", "Échap"),
+                ("Mon espace : favoris, notes, collections", "Ctrl+B"),
+                ("Reprendre la lecture (premier message non consulté)", "Ctrl+R"),
+                ("Exporter / imprimer la conversation", "Ctrl+E / Ctrl+P"),
+                ("Favori, note, collection, fil de discussion", "clic droit sur un message")]
         html = "<table cellspacing='6'>" + "".join(
             f"<tr><td>{a}</td><td><b>{k}</b></td></tr>" for a, k in rows) + "</table>"
         box = QMessageBox(self)
@@ -794,12 +831,227 @@ class MainWindow(QMainWindow):
         QMessageBox.about(self, APP_NAME,
                           f"<b>{APP_NAME}</b> {APP_VERSION}<br>Bibliothèque personnelle de conversations Telegram."
                           "<br><br>"
-                          "Fonctionnement 100 % local : aucune donnée n'est transmise.<br>"
+                          "Fonctionnement 100 % local : aucune donnée n'est transmise. Seule la vérification "
+                          "des mises à jour, facultative et désactivée par défaut, contacte GitHub.<br>"
                           f"Bibliothèque : <code>{self.db.path}</code>")
+
+    # ================================================================== #
+    # Données personnelles (favoris, notes, collections, lecture, fils)
+    # ================================================================== #
+
+    def _on_personal_action(self, action: str, msg) -> None:
+        conv, mid = msg.conversation_id, msg.message_id
+        if action == "favorite":
+            on = self.personal.toggle_favorite(conv, mid)
+            self.statusBar().showMessage("Ajouté aux favoris" if on else "Retiré des favoris", 3000)
+        elif action == "note":
+            from ui.personal_window import NoteDialog
+            excerpt = (msg.text or msg.service_text or "").replace("\n", " ")[:160]
+            dlg = NoteDialog(msg.note or "", f"{msg.sender or ''} · {day_long(msg.day) if msg.day else ''}\n"
+                             f"« {excerpt} »", self)
+            if dlg.exec() != QDialog.Accepted:
+                return
+            self.personal.set_note(conv, mid, dlg.text)
+        elif action.startswith("collection:") or action == "new_collection":
+            if action == "new_collection":
+                name, ok = QInputDialog.getText(self, "Nouvelle collection", "Nom de la collection :")
+                if not ok or not name.strip():
+                    return
+                try:
+                    cid = self.personal.create_collection(name)
+                except ValueError as exc:
+                    QMessageBox.warning(self, "Nouvelle collection", str(exc))
+                    return
+            else:
+                cid = int(action.split(":", 1)[1])
+            added = self.personal.add_to_collection(cid, conv, mid)
+            name = next((c.name for c in self.personal.collections() if c.id == cid), "")
+            self.statusBar().showMessage(f"Ajouté à « {name} »" if added else f"Déjà dans « {name} »", 3000)
+        elif action == "thread":
+            self.show_thread(conv, mid)
+            return
+        elif action == "mark_read":
+            self.message_view.mark_read_until(msg)
+            self.statusBar().showMessage("Position de lecture enregistrée à ce message", 3000)
+            return
+        self.message_view.reload()
+        self._refresh_personal_window()
+
+    def show_thread(self, conv_id: str, message_id: int) -> None:
+        from services.threads import build_thread
+        from ui.personal_window import ThreadDialog
+        try:
+            thread = build_thread(self.db, conv_id, message_id)
+        except ValueError as exc:
+            QMessageBox.information(self, "Fil de discussion", str(exc))
+            return
+        conv = self.repo.get_conversation(conv_id)
+        dlg = ThreadDialog(thread, conv.name if conv else "", self)
+        dlg.go_to.connect(self._go_to_message)
+        dlg.show()
+        self._thread_dialog = dlg
+
+    def resume_reading(self) -> None:
+        if not self.message_view.resume_reading():
+            self.statusBar().showMessage("Aucune position de lecture mémorisée pour cette conversation.", 4000)
+
+    def open_personal(self) -> None:
+        from ui.personal_window import PersonalWindow
+        if self._personal_window is None:
+            w = self._personal_window = PersonalWindow(self.personal, self.repo, self)
+            w.go_to.connect(self._go_to_message)
+            w.changed.connect(self.message_view.reload)
+            w.export_requested.connect(self.export_keys)
+        self._personal_window.refresh()
+        self._personal_window.show()
+        self._personal_window.raise_()
+
+    def _refresh_personal_window(self) -> None:
+        if self._personal_window is not None and self._personal_window.isVisible():
+            self._personal_window.refresh()
+
+    # ================================================================== #
+    # Exports et impression
+    # ================================================================== #
+
+    def _conv_names(self) -> dict[str, str]:
+        return {c.id: c.name for c in self.repo.list_conversations()}
+
+    def export_conversation(self, mode: str = "export") -> None:
+        from services import conversation_export as cx
+        from ui.conversation_export_dialog import ConversationExportDialog
+        conv = self.message_view.conv
+        if conv is None:
+            QMessageBox.information(self, APP_NAME, "Ouvrez d'abord une conversation.")
+            return
+        dlg = ConversationExportDialog(
+            conv.name, lambda a, b: cx.gather_conversation(self.repo, conv.id, a, b), self, mode=mode,
+            period=((conv.first_date or "")[:10] or None, (conv.last_date or "")[:10] or None),
+            conv_names={conv.id: conv.name}, default_dir=self.settings.last_export_dir)
+        dlg.exec()
+
+    def print_conversation(self) -> None:
+        self.export_conversation(mode="print")
+
+    def export_keys(self, title: str, keys: list) -> None:
+        from services import conversation_export as cx
+        from ui.conversation_export_dialog import ConversationExportDialog
+        msgs = cx.gather_keys(self.repo, keys)
+        ConversationExportDialog(title, lambda a, b: msgs, self, conv_names=self._conv_names(),
+                                 default_dir=self.settings.last_export_dir).exec()
+
+    EXPORT_SEARCH_LIMIT = 5000
+
+    def export_search_results(self, query) -> None:
+        page = self.engine.search(query, 0, self.EXPORT_SEARCH_LIMIT)
+        if page.total > self.EXPORT_SEARCH_LIMIT:
+            QMessageBox.information(self, "Exporter les résultats",
+                                    f"{page.total} résultats : seuls les {self.EXPORT_SEARCH_LIMIT} premiers "
+                                    "(selon le tri choisi) seront exportés.")
+        from services.personal_data import describe_query
+        self.export_keys(f"Recherche : {describe_query(query)}",
+                         [(h.conversation_id, h.message_id) for h in page.hits])
+
+    # ================================================================== #
+    # Maintenance : sauvegarde, diagnostic, doublons, composants, mises à jour
+    # ================================================================== #
+
+    def open_backup(self) -> None:
+        from ui.tools_dialogs import BackupDialog
+        dlg = BackupDialog(self.db, self.settings.file_path(), APP_VERSION, self)
+        dlg.personal_restored.connect(lambda: (self.message_view.reload(), self._refresh_personal_window()))
+        dlg.library_restore_requested.connect(lambda path: (dlg.close(), self.restore_library(path)))
+        dlg.exec()
+
+    def restore_library(self, path: str) -> None:
+        from services import backup
+        if QMessageBox.question(self, "Restaurer la bibliothèque",
+                                "La bibliothèque actuelle va être remplacée par celle de la sauvegarde (elle est "
+                                "conservée à côté), puis Telegramor redémarrera. Continuer ?") != QMessageBox.Yes:
+            return
+        db_path = Path(self.db.path)
+        self.settings.sync()
+        self.db.close()
+        try:
+            kept = backup.restore_library(Path(path), db_path, self.settings.file_path())
+        except backup.BackupError as exc:
+            self.db = Database(db_path)                 # la bibliothèque d'origine est intacte
+            QMessageBox.critical(self, "Restauration impossible", str(exc))
+            self._restart()
+            return
+        QMessageBox.information(self, "Restauration terminée",
+                                f"Bibliothèque restaurée. L'ancienne est conservée ici :\n{kept}\n\n"
+                                "Telegramor va redémarrer.")
+        self._restart()
+
+    def _restart(self) -> None:
+        import sys
+        from PySide6.QtCore import QProcess
+        QProcess.startDetached(sys.executable, sys.argv)
+        self._skip_save = True
+        QApplication.instance().quit()
+
+    def open_diagnostics(self) -> None:
+        from ui.tools_dialogs import DiagnosticsDialog
+        dlg = DiagnosticsDialog(Path(self.db.path), self)
+        dlg.rebuild_index.connect(self.repo.rebuild_search_index)
+        dlg.show()
+        dlg.start()
+        self._diagnostics = dlg
+
+    def open_duplicates(self) -> None:
+        from ui.tools_dialogs import DuplicatesDialog
+        dlg = DuplicatesDialog(self.db, self.repo, self)
+        dlg.go_to.connect(self._go_to_message)
+        dlg.show()
+        self._duplicates = dlg
+
+    def open_dependencies(self) -> None:
+        from ui.tools_dialogs import DependenciesDialog
+        DependenciesDialog(self).exec()
+
+    def toggle_auto_update(self) -> None:
+        self.settings.auto_update_check = self.act_auto_update.isChecked()
+        if self.settings.auto_update_check:
+            self.check_updates(manual=False)
+
+    def check_updates(self, manual: bool = True) -> None:
+        from datetime import datetime
+        from ui.tools_dialogs import check_updates_async, show_update_result
+        if self._update_thread is not None and self._update_thread.isRunning():
+            return
+        self.settings.last_update_check = datetime.now().isoformat(timespec="seconds")
+
+        def done(info) -> None:
+            if manual or info.newer:
+                show_update_result(self, info)
+
+        def failed(msg: str) -> None:
+            if manual:
+                QMessageBox.information(self, "Mises à jour", "Impossible de joindre GitHub (connexion absente ?). "
+                                        f"Telegramor fonctionne normalement hors ligne.\n\nDétail : {msg}")
+
+        self._update_thread = check_updates_async(self, APP_VERSION, done, failed)
+
+    def _startup_checks(self) -> None:
+        """Composants facultatifs absents (signalés une fois par version) et mise à jour hebdomadaire."""
+        from services import dependencies, update_check
+        if self.settings.deps_notified != APP_VERSION:
+            absent = [s for s in dependencies.check_all() if not s.available]
+            self.settings.deps_notified = APP_VERSION
+            if absent:
+                self.statusBar().showMessage(
+                    "Composants facultatifs absents : " + ", ".join(s.dep.label for s in absent[:3])
+                    + " — Aide › Composants installés", 15000)
+        if self.settings.auto_update_check and update_check.auto_check_due(self.settings.last_update_check):
+            self.check_updates(manual=False)
 
     # ================================================================== #
 
     def closeEvent(self, e) -> None:  # noqa: N802
+        if getattr(self, "_skip_save", False):          # redémarrage après restauration
+            super().closeEvent(e)
+            return
         self.message_view._emit_position()
         self.settings.save_window_state(self.saveGeometry(), self.splitter.saveState())
         self.settings.sync()
@@ -808,6 +1060,8 @@ class MainWindow(QMainWindow):
         if self._import_thread is not None:
             self._import_thread.quit()
             self._import_thread.wait(5000)
+        if self._update_thread is not None and self._update_thread.isRunning():
+            self._update_thread.wait(9000)
         self.db.close()
         super().closeEvent(e)
 

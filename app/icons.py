@@ -99,6 +99,22 @@ _P = {
                 '<path d="M6.5 10h.01M10 10h.01M14 10h.01M17.5 10h.01M7.5 14h9"/>',
     "plus": '<path d="M12 5v14M5 12h14"/>',
     "dot": '<circle cx="12" cy="12" r="4" fill="currentColor" stroke="none"/>',
+    # Données personnelles et outils (v1.3)
+    "star": '<path d="M12 3.6l2.6 5.3 5.8.8-4.2 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.2-4.1 5.8-.8z"/>',
+    "star-filled": '<path d="M12 3.6l2.6 5.3 5.8.8-4.2 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.2-4.1 5.8-.8z" '
+                   'fill="currentColor"/>',
+    "note": '<path d="M5 4h14a1 1 0 0 1 1 1v9.5L14.5 20H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/>'
+            '<path d="M14 20v-5a1 1 0 0 1 1-1h5"/><path d="M8 9h8M8 12.5h4"/>',
+    "collection": '<path d="M4 8.5h16v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M6.5 5.5h11M9 2.8h6"/>',
+    "thread": '<circle cx="6" cy="5.5" r="2"/><circle cx="6" cy="18.5" r="2"/><circle cx="18" cy="12" r="2"/>'
+              '<path d="M6 7.5v9M6 10c0 2 2 2 4 2h6"/>',
+    "export": '<path d="M12 15V3.5M7.5 8L12 3.5 16.5 8"/><path d="M4.5 13.5v5a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-5"/>',
+    "printer": '<path d="M7 9V3.5h10V9"/><rect x="3.5" y="9" width="17" height="8" rx="2"/>'
+               '<path d="M7 14.5h10v6H7z"/>',
+    "save": '<path d="M5 3.5h11l3.5 3.5v12a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 19V5A1.5 1.5 0 0 1 5 3.5z"/>'
+            '<path d="M8 3.5v5h7v-5M7.5 20.5v-6h9v6"/>',
+    "activity": '<path d="M3 12h4l2.5-6 5 12 2.5-6h4"/>',
+    "bookmark": '<path d="M6.5 3.5h11a1 1 0 0 1 1 1v16l-6.5-4.2-6.5 4.2v-16a1 1 0 0 1 1-1z"/>',
 }
 
 # Pictogramme par type de média

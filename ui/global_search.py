@@ -7,7 +7,7 @@ from PySide6.QtGui import (
     QAbstractTextDocumentLayout, QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPalette, QTextDocument,
 )
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QListView, QScrollArea, QStyle, QStyledItemDelegate, QStyleOptionViewItem,
+    QHBoxLayout, QLabel, QListView, QMenu, QScrollArea, QStyle, QStyledItemDelegate, QStyleOptionViewItem,
     QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -104,7 +104,6 @@ class SearchResultDelegate(QStyledItemDelegate):
         p.save()
         th = design.current()
         r = option.rect
-        pal = option.palette
         selected = bool(option.state & QStyle.State_Selected)
         hovered = bool(option.state & QStyle.State_MouseOver)
         p.setRenderHint(QPainter.Antialiasing)
@@ -181,6 +180,8 @@ class GlobalSearchPanel(QWidget):
 
     hit_selected = Signal(object, list)      # SearchHit, termes à surligner
     closed = Signal()
+    text_applied = Signal(str)               # texte d'une recherche rappelée (historique, enregistrée)
+    export_requested = Signal(object)        # SearchQuery des résultats à exporter
 
     def __init__(self, engine: SearchEngine, theme: Theme, parent=None) -> None:
         super().__init__(parent)
@@ -196,6 +197,15 @@ class GlobalSearchPanel(QWidget):
         self.filters_btn.setProperty("variant", "secondary")
         self.filters_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         icons.bind(self.filters_btn, "filters", "muted", 16)
+        self.personal = None                 # PersonalData : historique et recherches enregistrées
+        self._recorded: str | None = None
+        self.more_btn = QToolButton(toolTip="Historique, recherches enregistrées, export des résultats")
+        self.more_btn.setAccessibleName("Recherches enregistrées et historique")
+        self.more_btn.setPopupMode(QToolButton.InstantPopup)
+        icons.bind(self.more_btn, "bookmark", "muted", 16)
+        self.more_menu = QMenu(self.more_btn)
+        self.more_menu.aboutToShow.connect(self._fill_more_menu)
+        self.more_btn.setMenu(self.more_menu)
         close = QToolButton(toolTip="Fermer la recherche (Échap)")
         close.setAccessibleName("Fermer la recherche")
         icons.bind(close, "close", "muted", 16)
@@ -204,6 +214,7 @@ class GlobalSearchPanel(QWidget):
         head.setContentsMargins(14, 0, 10, 0)
         head.addWidget(title, 1)
         head.addWidget(self.filters_btn)
+        head.addWidget(self.more_btn)
         head.addWidget(close)
 
         self.filters = SearchFilters()
@@ -286,7 +297,70 @@ class GlobalSearchPanel(QWidget):
 
     def _emit_index(self, idx: QModelIndex) -> None:
         if idx.isValid():
+            self._record()
             self.hit_selected.emit(idx.data(ROLE_HIT), self.model.terms)
+
+    # ------------------------------------------------------------------ #
+    # Historique, recherches enregistrées, export
+    # ------------------------------------------------------------------ #
+
+    def _record(self) -> None:
+        """Mémorise la recherche dans l'historique (une fois, à l'ouverture d'un résultat)."""
+        if self.personal is None:
+            return
+        from services.personal_data import query_to_json
+        q = self.current_query()
+        key = query_to_json(q)
+        if key != self._recorded:
+            self._recorded = key
+            self.personal.record_search(q)
+
+    def apply_query(self, q) -> None:
+        self.text = q.text
+        self.text_applied.emit(q.text)
+        self.filters.set_query(q)
+        self.filters_btn.setChecked(self.filters.active_count() > 0)
+        self.run()
+
+    def _fill_more_menu(self) -> None:
+        from services.personal_data import describe_query
+        m = self.more_menu
+        m.clear()
+        q = self.current_query()
+        save = m.addAction(icons.icon("bookmark"), "Enregistrer cette recherche…", self._save_current)
+        save.setEnabled(self.personal is not None and not q.is_empty())
+        exp = m.addAction(icons.icon("export"), "Exporter les résultats…", lambda: self.export_requested.emit(q))
+        exp.setEnabled(self.model.total > 0)
+        if self.personal is None:
+            return
+        saved = self.personal.saved_searches()
+        m.addSection("Recherches enregistrées")
+        if not saved:
+            m.addAction("(aucune)").setEnabled(False)
+        for s in saved:
+            sub = m.addMenu(s.name)
+            sub.addAction("Lancer", lambda q=s.query: self.apply_query(q))
+            sub.addAction(icons.icon("trash"), "Supprimer", lambda i=s.id: self.personal.delete_saved_search(i))
+            sub.setToolTip(describe_query(s.query))
+        hist = self.personal.search_history()
+        m.addSection("Historique")
+        if not hist:
+            m.addAction("(vide)").setEnabled(False)
+        for h in hist[:15]:
+            m.addAction(describe_query(h), lambda q=h: self.apply_query(q))
+        if hist:
+            m.addAction(icons.icon("trash"), "Effacer l'historique", self.personal.clear_search_history)
+
+    def _save_current(self) -> None:
+        from PySide6.QtWidgets import QInputDialog, QMessageBox
+        from services.personal_data import describe_query
+        q = self.current_query()
+        name, ok = QInputDialog.getText(self, "Enregistrer la recherche", "Nom :", text=describe_query(q)[:60])
+        if ok and name.strip():
+            try:
+                self.personal.save_search(name, q)
+            except ValueError as exc:
+                QMessageBox.warning(self, "Enregistrer la recherche", str(exc))
 
     def focus_results(self) -> None:
         if self.model.rowCount():

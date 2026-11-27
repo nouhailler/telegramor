@@ -1,16 +1,40 @@
-# Telegram Archive Explorer
+# Telegramor — Telegram Archive Explorer
 
-Bibliothèque personnelle de conversations Telegram exportées en HTML, pour Debian 13.
-Fonctionnement 100 % local : aucune connexion à Telegram ni à Internet.
+Gestionnaire et explorateur **local** d'archives Telegram exportées en HTML
+(Telegram Desktop), pour Debian 13 et les distributions dérivées.
 
-> **Version 1.0 : les 5 étapes de la feuille de route sont terminées.** Parseur
-> fiable, interface graphique, moteur de recherche, bibliothèque multi-archives,
-> galerie multimédia, statistiques et chronologie avancée.
+- **Explorer** : conversations, recherche plein texte multicritère, galerie,
+  chronologie, statistiques et comparaisons.
+- **Organiser** : favoris, notes privées, collections, reprise de lecture,
+  fils de discussion.
+- **Valoriser** : export (HTML, PDF, Markdown, JSON), impression, copie de
+  médias.
+- **Fiabiliser** : diagnostic, détection des fichiers identiques, sauvegarde
+  et restauration.
 
-![Telegramor : liste des conversations, lecture et panneau d'informations](docs/captures/apres_principal.png)
+**Tout reste sur votre ordinateur** : aucun compte, aucun service en ligne,
+aucune télémétrie.
 
-Interface en thème clair ou sombre (Ctrl+Maj+D), avec barre latérale de navigation et
-recherche globale mise en avant. Système de design et détail de la refonte :
+> **Version 1.3** : données personnelles (favoris, notes, collections, lecture),
+> fils de discussion, exports et impression, statistiques comparatives,
+> diagnostic, fichiers identiques, sauvegarde et restauration, vérification des
+> composants, intégration continue. Détails :
+> [docs/rapport-evolutions-fonctionnelles.md](docs/rapport-evolutions-fonctionnelles.md).
+
+![Lecture d'une conversation avec une note personnelle et des favoris](docs/screenshots/lecture_notes_favoris.png)
+
+*Toutes les captures utilisent un jeu de données entièrement fictif.*
+
+| | |
+|---|---|
+| ![Mon espace : collections](docs/screenshots/mon_espace_collections.png) | ![Recherche multicritère](docs/screenshots/recherche_filtres.png) |
+| **Mon espace** : favoris, notes, collections | **Recherche** : filtres, historique, recherches enregistrées |
+| ![Fil de discussion](docs/screenshots/fil_discussion.png) | ![Comparaison statistique](docs/screenshots/statistiques_comparaison.png) |
+| **Fil de discussion** reconstitué à partir des citations | **Comparer** deux conversations, années ou périodes |
+| ![Diagnostic](docs/screenshots/diagnostic.png) | ![Reprise de lecture](docs/screenshots/reprise_lecture.png) |
+| **Diagnostic** de la bibliothèque | **Reprise de lecture** là où vous vous étiez arrêté |
+
+Interface en thème clair ou sombre (Ctrl+Maj+D). Système de design :
 [docs/rapport-refonte-graphique.md](docs/rapport-refonte-graphique.md).
 
 ## Installation par paquet .deb (Debian 13)
@@ -18,19 +42,42 @@ recherche globale mise en avant. Système de design et détail de la refonte :
 Téléchargez le fichier `.deb` de la [dernière version](https://github.com/nouhailler/telegramor/releases/latest), puis :
 
 ```bash
-sudo apt install ./telegram-archive-explorer_1.2.0_all.deb
+sudo apt install ./telegram-archive-explorer_1.3.0_all.deb
 ```
 
 L'application apparaît dans le menu (« Telegram Archive Explorer ») et se lance
 aussi avec la commande `telegram-archive-explorer`. Les dépendances (PySide6,
 BeautifulSoup, lxml) sont installées par `apt` ; la lecture vidéo intégrée est
-recommandée et installée par défaut. Pour reconstruire le paquet depuis les
-sources : `./packaging/build_deb.sh` (résultat dans `dist/`).
+recommandée et installée par défaut, comme l'impression directe. Pour
+reconstruire le paquet depuis les sources : `./packaging/build_deb.sh`
+(résultat dans `dist/`).
+
+- **Mise à jour** : installez simplement le nouveau `.deb` par-dessus
+  l'ancien. Votre bibliothèque et vos données personnelles sont conservées
+  et migrées automatiquement, sans perte.
+- **Désinstallation** : `sudo apt remove telegram-archive-explorer`. Vos
+  données (bibliothèque, notes, paramètres) ne sont **jamais** supprimées par
+  le paquet ; effacez vous-même les dossiers listés plus bas si vous le
+  souhaitez.
+
+### Composants facultatifs
+
+| Composant | Paquet Debian 13 | Sans lui |
+|---|---|---|
+| Lecteur vidéo intégré | `python3-pyside6.qtmultimedia python3-pyside6.qtmultimediawidgets` | les vidéos s'ouvrent avec le lecteur du système |
+| Impression directe | `python3-pyside6.qtprintsupport` | une page prête à imprimer s'ouvre dans le navigateur |
+| Images SVG des exports | `qt6-svg-plugins` | certains autocollants ne s'affichent pas |
+| Police Inter | `fonts-inter` | police de l'environnement (Cantarell, Noto…) |
+
+**Aide › Composants installés** indique ce qui manque et fournit la commande
+d'installation à copier. L'application n'installe jamais rien elle-même. Si
+un composant obligatoire manque, `telegram-archive-explorer` l'explique dans
+le terminal au lieu de planter.
 
 ## Installation depuis les sources (Debian 13)
 
 ```bash
-sudo apt install python3 python3-venv python3-pip \
+sudo apt install python3 python3-venv python3-pip python3-bs4 python3-lxml \
                  python3-pyside6.qtwidgets python3-pyside6.qtsvg
 # facultatif, police recommandée pour l'interface :
 sudo apt install fonts-inter
@@ -75,6 +122,9 @@ doublon.
 | Panneau d'informations | Ctrl+I |
 | Zoom avant / arrière / normal | Ctrl++ / Ctrl+− / Ctrl+0 |
 | Mode sombre | Ctrl+Shift+D |
+| **Mon espace** : favoris, notes, collections | Ctrl+B |
+| **Reprendre la lecture** (premier message non consulté) | Ctrl+R |
+| **Exporter / imprimer** la conversation | Ctrl+E / Ctrl+P |
 
 - **Galerie multimédia** (Ctrl+M) : photos, vidéos, GIF et autocollants,
   fichiers, audio, liens de toute la bibliothèque ; filtres conversation,
@@ -138,6 +188,86 @@ doublon.
 - Au redémarrage, l'application rouvre la dernière conversation à l'endroit
   où vous l'aviez laissée.
 
+### Organisation personnelle (nouveau en 1.3)
+
+Ces données sont créées dans Telegramor. Elles sont stockées localement,
+séparées des données Telegram, et ne sont **jamais** écrites dans les exports
+Telegram ni incluses dans les exports de conversations.
+
+- **Favoris** : clic droit sur un message › *Ajouter aux favoris* (étoile dans
+  la bulle). À ne pas confondre avec les messages épinglés dans Telegram, qui
+  restent affichés comme des événements de la conversation.
+- **Notes privées** : clic droit › *Ajouter une note…* ; la note apparaît
+  sous le message, dans un encadré distinct (« Ma note »). Elles sont
+  recherchables sans savoir dans quelle conversation elles se trouvent (casse
+  et accents ignorés).
+- **Collections** : clic droit › *Ajouter à une collection* (messages, et
+  médias depuis la galerie). Un élément peut appartenir à plusieurs
+  collections ; aucun fichier n'est déplacé ; supprimer une collection ne
+  supprime rien d'autre.
+- **Mon espace** (Ctrl+B, barre latérale) regroupe ces éléments, avec :
+  - pour les favoris : filtres par conversation, expéditeur et période, et tri
+    par date ;
+  - pour les notes : la recherche ;
+  - pour les collections : les filtres par type et la recherche ;
+  - partout : *Aller au message* et *Exporter…* ;
+  - en bas : *Exporter mes données personnelles…* (JSON, action distincte et
+    explicite).
+- **Reprise de lecture** : Telegramor retient le message le plus avancé que
+  vous avez consulté dans chaque conversation. À la visite suivante, un repère
+  « Reprise de lecture » le signale ; *Aller › Reprendre la lecture* (Ctrl+R)
+  mène au premier message non consulté. Clic droit › *Marquer comme lu
+  jusqu'ici* pour le déplacer, ou *Aller › Réinitialiser*. C'est un suivi
+  local, sans rapport avec les accusés de lecture de Telegram.
+- **Fils de discussion** : clic droit › *Afficher le fil* reconstitue
+  l'échange (message d'origine et réponses, récursivement) à partir des
+  citations de l'export. Un message cité absent des archives est signalé,
+  jamais deviné.
+
+### Exports, impression, statistiques
+
+- **Exporter** une conversation entière ou une période (Ctrl+E), les
+  résultats d'une recherche, des favoris ou une collection :
+  - formats : HTML autonome et imprimable, PDF (A4 paginé), Markdown ou JSON ;
+  - option *copier les pièces jointes à côté du document* ;
+  - un aperçu (nombre de messages, période, participants, pièces jointes)
+    précède la validation ;
+  - le contenu est entièrement échappé, sans aucun script.
+- **Imprimer** (Ctrl+P) : boîte d'impression du système si
+  `python3-pyside6.qtprintsupport` est installé, sinon page prête à imprimer
+  dans le navigateur. Mise en page A4, en-tête de conversation, séparateurs
+  de jours, messages non coupés entre deux pages.
+- **Statistiques** :
+  - filtres : période, mots à exclure ;
+  - expressions fréquentes (groupes de deux et trois mots) ;
+  - un clic sur un mot lance la recherche ;
+  - exports : données en CSV, tableau de bord en image PNG ;
+  - *Comparer…* : deux conversations, deux années ou deux périodes, avec des
+    indicateurs ramenés à la durée de chaque période et un export CSV.
+- **Recherche** : filtre *Réponse à un message*. Le bouton signet du panneau
+  de résultats donne accès à l'historique, aux recherches enregistrées et à
+  l'export des résultats.
+
+### Maintenance
+
+- **Fichier › Diagnostic de la bibliothèque** contrôle :
+  - l'intégrité SQLite, les références entre tables et l'index de recherche ;
+  - les archives introuvables et les fichiers HTML modifiés ;
+  - les médias manquants et les chemins invalides ;
+  - les fichiers non référencés, les réponses orphelines et les dates
+    manquantes ;
+  - les données personnelles dont le message a disparu.
+
+  Le rapport est exportable. Aucune correction n'est automatique : la
+  reconstruction de l'index reste une action explicite.
+- **Fichier › Fichiers identiques** calcule les empreintes SHA-256 des
+  médias (en arrière-plan, interruptible) et liste les fichiers strictement
+  identiques avec leur provenance. Dans la galerie, *Masquer les fichiers
+  identiques* n'en montre qu'une occurrence, et le clic droit propose les
+  autres occurrences. Rien n'est jamais supprimé.
+- **Fichier › Sauvegarde et restauration** : voir plus bas.
+- **Aide › Rechercher une mise à jour** (voir *Confidentialité*).
+
 ### Ligne de commande
 
 ```bash
@@ -147,9 +277,53 @@ doublon.
 ./run.sh --db autre.sqlite                   # utiliser une autre bibliothèque
 ```
 
-La bibliothèque est stockée dans
-`~/.local/share/telegram-archive-explorer/bibliotheque.sqlite`
-(les médias restent dans les dossiers d'export, référencés par chemin relatif).
+## Données et sauvegarde
+
+| Élément | Emplacement |
+|---|---|
+| Bibliothèque : messages importés, index, données personnelles | `~/.local/share/telegram-archive-explorer/bibliotheque.sqlite` |
+| Paramètres | `~/.config/TelegramArchiveExplorer/TelegramArchiveExplorer.conf` |
+| Cache d'icônes et pages d'impression | `~/.cache/…` |
+| Exports Telegram (HTML, médias) | là où vous les avez placés : **jamais modifiés ni copiés** |
+
+Dans la base SQLite, les données importées (tables `archives`, `messages`,
+`medias`…) et vos données personnelles (tables `user_*`) sont séparées. Ces
+dernières désignent un message par le couple (conversation, identifiant
+Telegram) : elles survivent à la réindexation, à la suppression puis à la
+réimportation d'une archive. Les migrations de schéma sont versionnées et
+non destructives.
+
+**Sauvegarde** (*Fichier › Sauvegarde et restauration*) : une archive ZIP
+privée (droits 0600) contenant :
+
+- vos données personnelles ;
+- la bibliothèque complète, copiée de façon cohérente par l'API de
+  sauvegarde SQLite, même pendant l'utilisation ;
+- les paramètres.
+
+Les exports Telegram ne sont pas inclus : conservez-les de votre côté.
+
+**Restauration** : la sauvegarde est vérifiée (empreintes, intégrité SQLite)
+avant tout remplacement. Trois choix sont proposés :
+
+- fusionner les données personnelles ;
+- les remplacer ;
+- restaurer toute la bibliothèque. L'ancienne base est alors conservée à côté
+  et l'application redémarre.
+
+Sur un autre ordinateur, relocalisez ensuite les archives (*Bibliothèque des
+archives › Localiser…*).
+
+## Dépannage
+
+| Symptôme | Solution |
+|---|---|
+| « composants obligatoires manquants » au lancement | exécuter la commande `sudo apt install …` affichée |
+| Les vidéos s'ouvrent dans un autre lecteur | installer le lecteur intégré (voir *Composants facultatifs*) |
+| « Archive introuvable » | brancher le disque ou *Bibliothèque des archives › Localiser…* |
+| Médias manquants | l'export a été fait sans les médias : réexporter depuis Telegram Desktop avec les médias |
+| Recherche incohérente | *Fichier › Diagnostic*, puis *Reconstruire l'index de recherche* |
+| Retrouver un état antérieur | *Fichier › Sauvegarde et restauration › Restaurer* |
 
 ## Tests
 
@@ -157,12 +331,35 @@ La bibliothèque est stockée dans
 .venv/bin/python -m pytest
 ```
 
-129 tests : parseur (fichier de référence réel + cas synthétiques), médias,
-importation (séquentielle et parallèle, résultats identiques), base SQLite,
-bibliothèque multi-archives (doublons, fusion, renommage, déplacement,
-intégrité, migration), moteur de recherche (dont performance sur 200 000
-messages et point d'extension sémantique), statistiques, copie de médias vers un dossier, interface (rendu hors
-écran).
+Les tests couvrent :
+
+- le parseur (fichier de référence réel et cas synthétiques) et les médias ;
+- l'importation, séquentielle et parallèle, avec des résultats identiques ;
+- la base SQLite et ses migrations, dont v2 → v3 sans perte ;
+- la bibliothèque multi-archives ;
+- le moteur de recherche, dont la performance sur 200 000 messages ;
+- les données personnelles ;
+- le diagnostic, les fichiers identiques, la sauvegarde et la restauration
+  (dont les fichiers altérés) ;
+- les exports (échappement HTML, confidentialité), les statistiques et les
+  comparaisons ;
+- les dépendances et la vérification des mises à jour, simulée sans réseau ;
+- l'interface, rendue hors écran.
+
+Les nouvelles fonctions sont testées sur des données entièrement
+synthétiques.
+
+**Intégration continue** (`.github/workflows/ci.yml`) : à chaque push et
+pull request, un conteneur Debian 13 :
+
+1. installe les paquets PySide6 de Debian ;
+2. exécute flake8 (règles pyflakes) et toute la suite pytest ;
+3. construit le `.deb`, vérifie son contenu et ses métadonnées ;
+4. l'installe et contrôle les dépendances.
+
+Le paquet et les résultats des tests sont conservés comme artefacts.
+L'interface y est testée hors écran : son rendu visuel n'est pas vérifié en
+CI.
 
 Le fichier de référence `tests/fixtures/reference/messages.html` est une copie
 d'un export réel : il n'est pas publié dans le dépôt. Sans lui, les tests qui en
@@ -197,14 +394,25 @@ database/   db_manager.py   connexion SQLite, migrations (PRAGMA user_version)
 services/   indexing_service.py  importation dans un thread
             media_service.py     miniatures asynchrones + cache, ouverture système
             navigation_service.py historique des sauts
-            statistics_service.py calcul des statistiques
+            statistics_service.py statistiques, comparaisons, export CSV
+            personal_data.py     favoris, notes, collections, lecture, recherches
+            threads.py           fils de discussion (citations)
+            conversation_export.py export HTML / PDF / Markdown / JSON, impression
+            media_dedup.py       empreintes SHA-256, fichiers identiques
+            diagnostics.py       diagnostic de la bibliothèque
+            backup.py            sauvegarde et restauration
+            dependencies.py      composants obligatoires et facultatifs
+            update_check.py      vérification facultative des versions
 ui/         conversation_list.py, message_view.py, message_widgets.py,
             information_panel.py, media_gallery.py, media_viewer.py, formatting.py,
             global_search.py, advanced_search.py, find_bar.py, archive_library.py,
             gallery_window.py, statistics_window.py, timeline.py, export_dialog.py,
-            components.py (en-têtes de fenêtre, libellés abrégés…)
+            components.py, personal_window.py (Mon espace, notes, fils),
+            conversation_export_dialog.py, tools_dialogs.py (diagnostic,
+            fichiers identiques, sauvegarde, composants, mises à jour)
 tests/
-docs/       ETAPE1_PARSEUR.md … ETAPE5_AVANCE.md, rapport-refonte-graphique.md
+docs/       ETAPE1…5, rapport-refonte-graphique.md, audit-fonctionnel-initial.md,
+            rapport-evolutions-fonctionnelles.md, screenshots/
 ```
 
 ## Sécurité et confidentialité
@@ -216,3 +424,30 @@ docs/       ETAPE1_PARSEUR.md … ETAPE5_AVANCE.md, rapport-refonte-graphique.md
   sortant de l'archive est signalé et non consulté.
 - Seuls les liens `http(s)` et `mailto` sont ouverts dans le navigateur, et
   uniquement sur clic de l'utilisateur.
+- Les requêtes SQL sont paramétrées. Les exports HTML et le texte affiché
+  sont échappés. La restauration ne lit que les fichiers attendus de
+  l'archive ZIP et vérifie leurs empreintes.
+- Les sauvegardes et l'export des données personnelles sont créés avec des
+  droits privés (0600). Aucun journal ne contient le contenu des messages.
+- **Réseau** : aucune connexion, à une seule exception facultative.
+  *Aide › Rechercher une mise à jour*, ou la vérification hebdomadaire
+  (désactivée par défaut, activable dans le menu Aide), envoie une requête
+  HTTPS GET à `api.github.com/repos/nouhailler/telegramor/releases/latest` :
+  - aucun cookie, identifiant, contenu ou historique n'est transmis ;
+  - l'en-tête User-Agent est générique ;
+  - comme toute requête web, elle révèle l'adresse IP à GitHub ;
+  - rien n'est téléchargé ni installé : seul un lien vers la page officielle
+    est proposé.
+
+## État du projet et limitations connues
+
+- Formats d'export pris en charge : HTML de Telegram Desktop (pas le JSON
+  « lisible par machine »).
+- Pas encore de recherche sémantique, d'IA locale ni de transcription
+  audio. Le point d'extension `database/semantic.py` est prêt ; ces modules
+  facultatifs sont prévus pour une version ultérieure (voir le rapport
+  d'évolutions).
+- Pas de paquet AppImage ni Flatpak : le paquet Debian reste la
+  distribution officielle.
+- Le PDF produit par Qt suit une mise en page plus simple que la page HTML
+  imprimable.

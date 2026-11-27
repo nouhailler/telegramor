@@ -58,6 +58,11 @@ def main(argv: list[str] | None = None) -> int:
     imp.set_defaults(func=cmd_import)
     args = p.parse_args(argv)
     if args.command is None:
+        from services.dependencies import missing, terminal_report
+        absent = missing(required_only=True)
+        if absent:                      # message clair plutôt qu'une trace Python
+            print(terminal_report(absent), file=sys.stderr)
+            return 2
         from app.main_window import run_gui
         return run_gui(sys.argv, Path(args.db) if args.db else None)
     return args.func(args)

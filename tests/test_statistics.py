@@ -59,3 +59,58 @@ def test_neighbour_day():
     assert neighbour_day(days, "2024-01-20", 1, "month") == "2024-03-02"
     assert neighbour_day(days, "2024-03-02", -1, "month") == "2024-01-05"
     assert neighbour_day(days, None, -1) == "2024-03-02"
+
+
+def test_period_ngrams_exclusions_and_csv(synthetic_lib):
+    from services.statistics_service import compute, to_csv
+    db, _, convs = synthetic_lib
+    v = convs["Voyage en Italie"].id
+    july = compute(db, v, date_from="2025-07-01", date_to="2025-07-31")
+    assert july.messages == 3 and july.first_day == "2025-07-07" and july.date_from == "2025-07-01"
+    assert compute(db, v, date_to="2025-05-12").messages == 4
+    full = compute(db)
+    words = dict(full.top_words)
+    assert "florence" in words or "Florence".lower() in words
+    excl = dict(compute(db, excluded_words=["Florence"]).top_words)
+    assert "florence" not in excl
+    csv_text = to_csv(full, "Toute la bibliothèque")
+    assert "Messages par mois" in csv_text and "Groupes de deux mots" in csv_text and ";" in csv_text
+
+
+def test_ngrams_counted_only_when_repeated(tmp_path):
+    from database.db_manager import Database
+    from database.repositories import LibraryRepository
+    from importer.import_manager import import_path
+    from services.statistics_service import compute
+    from tests.conftest import msg as m, page as pg
+    d = tmp_path / "e"
+    d.mkdir()
+    body = "".join(m(i, f'<div class="text">{t}</div>', title=f"0{i}.03.2025 10:00:00 UTC+01:00")
+                   for i, t in enumerate(["Le train de nuit part tôt", "Encore le train de nuit !",
+                                          "Réservation du train de nuit faite", "Billet pour Rome",
+                                          "Billet pour Rome encore", "Une phrase isolée"], 1))
+    (d / "messages.html").write_text(pg(body))
+    db = Database(tmp_path / "l.sqlite")
+    LibraryRepository(db).save_import(import_path(d), d)
+    st = compute(db)
+    # les mots de moins de 3 lettres (« de ») sont ignorés : « train de nuit » → « train nuit »
+    assert ("train nuit", 3) in st.top_bigrams
+    # un mot courant (« pour ») coupe la suite : pas de faux groupe « billet rome »
+    assert all(b != "billet rome" for b, _ in st.top_bigrams)
+    assert all(n > 1 for _, n in st.top_bigrams)                # un groupe vu une seule fois n'est pas retenu
+    db.close()
+
+
+def test_compare_two_periods_normalizes_by_duration(synthetic_lib):
+    from services.statistics_service import Scope, compare
+    db, _, convs = synthetic_lib
+    v = convs["Voyage en Italie"].id
+    cmp = compare(db, Scope("Mai", v, date_from="2025-05-01", date_to="2025-05-31"),
+                  Scope("Juillet", v, date_from="2025-07-01", date_to="2025-07-31"))
+    rows = {r[0]: r for r in cmp.rows}
+    assert rows["Messages"][1:3] == ("5", "3")
+    assert rows["Durée de la période (jours)"][1:3] == ("31", "31")
+    assert rows["Messages par jour (sur la période)"][3] == "-40 %"
+    assert abs(sum(cmp.hours_pct[0]) - 100) < 0.5
+    other = compare(db, Scope("Voyage", v), Scope("Famille", convs["Famille"].id))
+    assert {r[0] for r in other.rows} >= {"Participants actifs", "Médias pour 100 messages"}

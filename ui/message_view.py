@@ -8,9 +8,7 @@ d'ancre pour que l'affichage ne « saute » pas.
 
 from __future__ import annotations
 
-from datetime import date
-
-from PySide6.QtCore import QDate, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QDate, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QTextCharFormat
 from PySide6.QtWidgets import (
     QCalendarWidget, QDialog, QDialogButtonBox, QFrame, QHBoxLayout, QLabel, QMenu, QScrollArea,
@@ -29,7 +27,7 @@ from services.navigation_service import Location, NavigationHistory
 from .components import ElidedLabel, dialog_header
 from .find_bar import FindBar
 from .timeline import neighbour_day
-from .formatting import MOIS, day_long, month_label, period, plural
+from .formatting import day_long, month_label, period, plural
 from .media_viewer import ImageViewer, play_video
 from .message_widgets import RenderContext, RowWidget, make_row
 
@@ -90,6 +88,7 @@ class MessageView(QWidget):
     toggle_info_panel = Signal()
     advanced_search_requested = Signal(str, str)   # texte, conversation
     day_changed = Signal(str)                      # jour affiché en haut de la vue
+    personal_action = Signal(str, object)          # action personnelle (favori, note…), MessageRow
 
     def __init__(self, repo: LibraryRepository, theme: Theme, engine: SearchEngine | None = None,
                  parent=None) -> None:
@@ -108,6 +107,8 @@ class MessageView(QWidget):
         self._loading = False
         self._anchor: tuple[RowWidget, int] | None = None
         self._pending_scroll: tuple[int, str, bool] | None = None   # seq, alignement, surbrillance
+        self.personal = None          # services.personal_data.PersonalData (données personnelles)
+        self._marker_shown: int | None = None   # repère de lecture affiché pour cette visite
 
         self._build_header()
         self.area = QScrollArea()
@@ -265,6 +266,10 @@ class MessageView(QWidget):
         self.area.show()
         self.header.show()
         self.bounds = self.repo.seq_bounds(conv.id)
+        if self.personal is not None and (not self.rows or self.rows[0].msg.conversation_id != conv.id
+                                          or getattr(self, "_marker_conv", None) != conv.id):
+            self._marker_conv = conv.id
+            self._marker_shown = self._visible_marker(conv.id)
         n_part = len(self.repo.participants(conv.id))
         self.title.setText(conv.name)
         self._paint_avatar()
@@ -366,7 +371,10 @@ class MessageView(QWidget):
         return RenderContext(
             theme=self.theme, owner=self.owner, font=f, bubble_max_width=self._bubble_width(),
             on_reply=self._on_reply, on_photo=self._on_photo, on_video=self._on_video, on_link=open_url,
-            terms=self.terms)
+            terms=self.terms,
+            on_action=(lambda action, msg: self.personal_action.emit(action, msg)) if self.personal else None,
+            collections=[(c.id, c.name) for c in self.personal.collections()] if self.personal else [],
+            read_marker=self._marker_shown)
 
     def _bubble_width(self) -> int:
         vw = self.area.viewport().width() if self.area.isVisible() else 900
@@ -552,6 +560,60 @@ class MessageView(QWidget):
         seq = self.first_visible_seq()
         if self.conv and seq is not None:
             self.position_changed.emit(self.conv.id, seq)
+        self._advance_read_marker()
+
+    # ------------------------------------------------------------------ #
+    # Suivi de lecture (local à Telegramor)
+    # ------------------------------------------------------------------ #
+
+    def _visible_marker(self, conv_id: str) -> int | None:
+        """Repère à afficher : dernier message lu, sauf s'il est le dernier de la conversation."""
+        mid = self.personal.read_marker(conv_id)
+        if mid is None or self.bounds is None:
+            return None
+        seq = self.repo.seq_of_message(conv_id, mid)
+        if seq is None or not self.repo.messages_after(conv_id, seq, 1):
+            return None
+        return mid
+
+    def _last_visible_row(self) -> RowWidget | None:
+        if not self.rows:
+            return None
+        bottom = self.area.verticalScrollBar().value() + self.area.viewport().height() - 8
+        candidates = [r for r in self.rows if r.y() <= bottom]
+        return candidates[-1] if candidates else None
+
+    def _advance_read_marker(self) -> None:
+        if self.personal is None or not self.conv or self._pending_scroll:
+            return
+        row = self._last_visible_row()
+        while row is not None and row.msg.kind != "default":
+            i = self.rows.index(row)
+            row = self.rows[i - 1] if i > 0 else None
+        if row is not None:
+            self.personal.advance_read_marker(self.conv.id, row.msg.message_id, row.seq)
+
+    def resume_reading(self) -> bool:
+        """Va au premier message non consulté (après le repère de lecture)."""
+        if self.personal is None or not self.conv:
+            return False
+        mid = self.personal.read_marker(self.conv.id)
+        seq = self.repo.seq_of_message(self.conv.id, mid) if mid is not None else None
+        if seq is None:
+            return False
+        nxt = self.repo.messages_after(self.conv.id, seq, 1)
+        self.jump_to_seq(nxt[0].seq if nxt else seq, highlight=True)
+        return True
+
+    def mark_read_until(self, msg: MessageRow) -> None:
+        if self.personal is not None:
+            self.personal.set_read_marker(msg.conversation_id, msg.message_id)
+
+    def reset_reading(self) -> None:
+        if self.personal is not None and self.conv:
+            self.personal.clear_read_marker(self.conv.id)
+            self._marker_shown = None
+            self.reload()
 
     def _update_back(self) -> None:
         self.back_btn.setEnabled(self.history.can_go_back())

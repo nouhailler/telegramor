@@ -55,3 +55,84 @@ def pytest_runtest_makereport(item, call):
         rep.outcome = "skipped"
         rep.longrepr = (str(item.path), item.location[1] or 0,
                         "Skipped: tests/fixtures/reference/messages.html absent (export réel non publié)")
+
+
+# --------------------------------------------------------------------------- #
+# Bibliothèque synthétique (données entièrement fictives) pour les tests des
+# fonctions personnelles, du diagnostic, des exports et de la sauvegarde.
+# --------------------------------------------------------------------------- #
+
+def photo_msg(mid: int, href: str, caption: str = "", **kw) -> str:
+    cap = f'<div class="text">{caption}</div>' if caption else ""
+    return msg(mid, f'<div class="media_wrap clearfix"><a class="photo_wrap clearfix pull_left" href="{href}">'
+                    f'<img class="photo" src="{href}" style="width: 260px; height: 173px"/></a></div>{cap}', **kw)
+
+
+def reply_msg(mid: int, target: int, text: str, **kw) -> str:
+    return msg(mid, f'<div class="reply_to details">In reply to <a href="#go_to_message{target}" '
+                    f'onclick="return GoToMessage({target})">this message</a></div><div class="text">{text}</div>', **kw)
+
+
+def build_synthetic_exports(root: Path) -> tuple[Path, Path]:
+    """Deux exports fictifs : « Voyage » (fil de réponses, photo) et « Famille »
+    (la même photo, octet pour octet, sous un autre nom ; une photo manquante)."""
+    a = root / "ExportVoyage"
+    (a / "photos").mkdir(parents=True)
+    pixels = b"\x89PNG fictive " + bytes(range(256)) * 8
+    (a / "photos" / "florence.jpg").write_bytes(pixels)
+    (a / "photos" / "sienne.jpg").write_bytes(pixels[::-1])
+    (a / "messages.html").write_text(page(
+        service(-1, "12 May 2025")
+        + msg(1, '<div class="text">On part en Italie en juillet ?</div>', sender="Léa",
+              title="12.05.2025 09:00:00 UTC+02:00")
+        + reply_msg(2, 1, "Oui, je regarde les trains pour Florence", sender="Marc",
+                    title="12.05.2025 09:05:00 UTC+02:00")
+        + reply_msg(3, 2, "Le train de nuit est parfait", sender="Léa", title="12.05.2025 09:10:00 UTC+02:00")
+        + reply_msg(4, 1, "Je réserve l'appartement", sender="Camille", title="12.05.2025 09:20:00 UTC+02:00")
+        + reply_msg(5, 999, "Réponse à un message absent de l'export", sender="Marc",
+                    title="13.05.2025 08:00:00 UTC+02:00")
+        + service(-2, "7 July 2025")
+        + photo_msg(6, "photos/florence.jpg", "Premier matin à Florence", sender="Camille",
+                    title="07.07.2025 08:12:30 UTC+02:00")
+        + photo_msg(7, "photos/sienne.jpg", "Pause à Sienne", sender="Léa", title="09.07.2025 13:22:10 UTC+02:00")
+        + msg(8, '<div class="text">Le lien : <a href="https://exemple.org/carte">https://exemple.org/carte</a></div>',
+              sender="Marc", title="09.07.2025 14:00:00 UTC+02:00"),
+        name="Voyage en Italie"))
+    b = root / "ExportFamille"
+    (b / "photos").mkdir(parents=True)
+    (b / "photos" / "copie_florence.jpg").write_bytes(pixels)          # doublon exact
+    (b / "photos" / "orphelin.jpg").write_bytes(b"jamais reference")   # fichier non référencé
+    (b / "messages.html").write_text(page(
+        service(-1, "24 December 2025")
+        + msg(1, '<div class="text">Joyeux Noël à tous !</div>', sender="Hugo", title="24.12.2025 19:00:00 UTC+01:00")
+        + photo_msg(2, "photos/copie_florence.jpg", "Souvenir d'Italie", sender="Inès",
+                    title="24.12.2025 19:30:00 UTC+01:00")
+        + photo_msg(3, "photos/absente.jpg", "Photo perdue", sender="Hugo", title="25.12.2025 10:00:00 UTC+01:00"),
+        name="Famille"))
+    return a, b
+
+
+@pytest.fixture
+def synthetic_lib(tmp_path):
+    """(db, repo, conversations par nom) d'une bibliothèque synthétique importée."""
+    from database.db_manager import Database
+    from database.repositories import LibraryRepository
+    from importer.import_manager import import_path
+    a, b = build_synthetic_exports(tmp_path / "exports")
+    db = Database(tmp_path / "lib.sqlite")
+    repo = LibraryRepository(db)
+    repo.save_import(import_path(a), a)
+    repo.save_import(import_path(b), b)
+    convs = {c.name: c for c in repo.list_conversations()}
+    yield db, repo, convs
+    db.close()
+
+
+@pytest.fixture(scope="session")
+def qapp():
+    """Application Qt hors écran (QApplication, compatible avec les tests d'interface)."""
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtWidgets import QApplication
+    return QApplication.instance() or QApplication([])

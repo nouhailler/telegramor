@@ -37,6 +37,11 @@ class RenderContext:
     on_video: Callable[[MediaRow], None]
     on_link: Callable[[str], None]
     terms: list[str] = field(default_factory=list)   # termes recherchés à surligner
+    # Données personnelles : action ('favorite', 'note', 'collection:<id>', 'new_collection',
+    # 'thread', 'mark_read') demandée depuis le menu d'une bulle ; None = menu sans ces entrées
+    on_action: Callable[[str, MessageRow], None] | None = None
+    collections: list[tuple[int, str]] = field(default_factory=list)   # pour le sous-menu « Ajouter à… »
+    read_marker: int | None = None    # identifiant du dernier message lu (repère « Reprise de lecture »)
 
     @property
     def scale(self) -> float:
@@ -384,9 +389,15 @@ class MessageBubbleRow(RowWidget):
         color = sender_color(msg.sender_userpic, msg.sender)
         av_size = int(self.AVATAR * ctx.scale)
 
-        row = QHBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        row = QHBoxLayout()
         row.setContentsMargins(20, 2 if msg.is_joined else 8, 20, 1)
         row.setSpacing(10)
+        outer.addLayout(row)
+        if ctx.read_marker is not None and msg.message_id == ctx.read_marker:
+            outer.addWidget(read_marker_rule(ctx))
 
         # Avatar (messages reçus, premier d'un groupe)
         avatar = QLabel()
@@ -441,6 +452,9 @@ class MessageBubbleRow(RowWidget):
             col.addWidget(self.text_label)
             self._fit_text(ctx.bubble_max_width)
 
+        if msg.note:
+            col.addWidget(self._note_box(msg))
+
         # Pied : réactions + heure
         foot = QHBoxLayout()
         foot.setSpacing(4)
@@ -455,6 +469,19 @@ class MessageBubbleRow(RowWidget):
             chip.setToolTip(", ".join(r.users) if r.users else f"{r.count} réaction(s)")
             foot.addWidget(chip)
         foot.addStretch(1)
+        if msg.collections:
+            coll = QLabel()
+            coll.setPixmap(icons.pixmap("collection", ctx.theme.muted, 13))
+            coll.setToolTip(f"Dans {msg.collections} collection(s) personnelle(s)")
+            coll.setAccessibleName(coll.toolTip())
+            foot.addWidget(coll)
+        if msg.favorite:
+            star = QLabel()
+            star.setObjectName("FavoriteMark")
+            star.setPixmap(icons.pixmap("star-filled", ctx.theme.warning, 14))
+            star.setToolTip("Favori personnel (Telegramor)")
+            star.setAccessibleName("Favori")
+            foot.addWidget(star)
         meta_txt = ("modifié " if msg.edited_raw else "") + time_hm(msg.date_local)
         if msg.signature:
             meta_txt = f"{msg.signature} · {meta_txt}"
@@ -509,6 +536,30 @@ class MessageBubbleRow(RowWidget):
         lbl.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         return lbl
 
+    def _note_box(self, msg: MessageRow) -> QWidget:
+        """Note personnelle : clairement distincte du contenu Telegram (teinte, pictogramme, libellé)."""
+        t = self.ctx.theme
+        box = ClickableFrame()
+        box.setObjectName("PersonalNote")
+        box.setStyleSheet(f"#PersonalNote {{ background: {t.warning_soft}; border-radius: 8px; "
+                          f"border-left: 3px solid {t.warning}; }}")
+        lay = QHBoxLayout(box)
+        lay.setContentsMargins(8, 5, 8, 5)
+        lay.setSpacing(6)
+        ic = QLabel()
+        ic.setPixmap(icons.pixmap("note", t.warning, 14))
+        lay.addWidget(ic, 0, Qt.AlignTop)
+        lbl = QLabel(f"<b>Ma note</b> · {escape(msg.note)}")
+        lbl.setWordWrap(True)
+        lbl.setFont(small_font(self.ctx.font, 0.88))
+        lbl.setStyleSheet(f"color: {t.text};")
+        lay.addWidget(lbl, 1)
+        box.setToolTip("Note personnelle Telegramor (jamais exportée avec la conversation). Cliquer pour modifier.")
+        if self.ctx.on_action:
+            box.setCursor(Qt.PointingHandCursor)
+            box.clicked.connect(lambda: self.ctx.on_action("note", msg))
+        return box
+
     def _quote(self, msg: MessageRow) -> QWidget:
         rep = msg.reply
         q = ClickableFrame()
@@ -559,10 +610,48 @@ class MessageBubbleRow(RowWidget):
                 menu.addAction(f"Ouvrir ({label}) avec l'application système", lambda p=m.abs_file: open_with_system(p))
                 menu.addAction("Afficher dans le dossier", lambda p=m.abs_file: show_in_folder(p))
                 menu.addAction("Copier le chemin du fichier", lambda p=m.abs_file: clip.setText(str(p)))
+        act = self.ctx.on_action
+        if act is not None:
+            menu.addSeparator()
+            menu.addAction(icons.icon("star"), "Retirer des favoris" if msg.favorite else "Ajouter aux favoris",
+                           lambda: act("favorite", msg))
+            menu.addAction(icons.icon("note"), "Modifier la note…" if msg.note else "Ajouter une note…",
+                           lambda: act("note", msg))
+            sub_menu = menu.addMenu(icons.icon("collection"), "Ajouter à une collection")
+            for cid, name in self.ctx.collections:
+                sub_menu.addAction(name, lambda c=cid: act(f"collection:{c}", msg))
+            if self.ctx.collections:
+                sub_menu.addSeparator()
+            sub_menu.addAction(icons.icon("plus"), "Nouvelle collection…", lambda: act("new_collection", msg))
+            menu.addAction(icons.icon("thread"), "Afficher le fil de discussion", lambda: act("thread", msg))
+            menu.addAction(icons.icon("bookmark"), "Marquer comme lu jusqu'ici", lambda: act("mark_read", msg))
         menu.addSeparator()
         info = menu.addAction(f"Message n° {msg.message_id} · {msg.archive_name}")
         info.setEnabled(False)
         menu.exec(self.bubble.mapToGlobal(pos))
+
+
+def read_marker_rule(ctx: RenderContext) -> QWidget:
+    """Repère « reprise de lecture » placé sous le dernier message consulté dans Telegramor."""
+    w = QWidget()
+    w.setObjectName("ReadMarker")
+    lay = QHBoxLayout(w)
+    lay.setContentsMargins(24, 10, 24, 6)
+    lay.setSpacing(10)
+    lbl = QLabel("Reprise de lecture — messages suivants non consultés dans Telegramor")
+    lbl.setFont(small_font(ctx.font, 0.84))
+    lbl.setStyleSheet(f"color: {ctx.theme.accent_text}; font-weight: 600;")
+    lbl.setToolTip("Dernier message consulté lors d'une visite précédente (suivi local, sans lien avec "
+                   "les accusés de lecture de Telegram).")
+    for i in range(2):
+        rule = QFrame()
+        rule.setFixedHeight(2)
+        rule.setStyleSheet(f"background: {ctx.theme.accent}; border-radius: 1px;")
+        rule.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        lay.addWidget(rule, 1)
+        if i == 0:
+            lay.addWidget(lbl)
+    return w
 
 
 def make_row(msg: MessageRow, ctx: RenderContext) -> RowWidget:

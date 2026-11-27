@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import posixpath
 from dataclasses import dataclass, field
 from collections import Counter
@@ -628,7 +629,7 @@ class LibraryRepository:
     def medias(self, conv_id: str, types: tuple[str, ...]) -> list[MediaRow]:
         marks = ",".join("?" * len(types))
         rows = self.conn.execute(
-            f"""SELECT md.*, m.archive_id, m.source_file, m.seq, m.date_local, m.sender
+            f"""SELECT md.*, m.archive_id, m.source_file, m.seq, m.date_local, m.sender, m.message_id AS tg_id
                 FROM medias md JOIN messages m ON m.id = md.message_pk
                 WHERE md.conversation_id = ? AND m.is_duplicate = 0 AND md.media_type IN ({marks})
                 ORDER BY m.seq, md.ordinal""", (conv_id, *types)).fetchall()
@@ -636,10 +637,12 @@ class LibraryRepository:
         for r in rows:
             mr = self._media_row(r, r["archive_id"], r["source_file"])
             mr.message_seq, mr.message_date, mr.message_sender = r["seq"], r["date_local"], r["sender"]
+            mr.conversation_id, mr.message_id = conv_id, r["tg_id"]
             out.append(mr)
         return out
 
-    def _gallery_where(self, types, conversation_id, sender, year, archive_id) -> tuple[str, list]:
+    def _gallery_where(self, types, conversation_id, sender, year, archive_id,
+                       unique: bool = False) -> tuple[str, list]:
         where = ["m.is_duplicate = 0", f"md.media_type IN ({','.join('?' * len(types))})"]
         params: list = list(types)
         if conversation_id:
@@ -654,23 +657,33 @@ class LibraryRepository:
         if archive_id is not None:
             where.append("m.archive_id = ?")
             params.append(archive_id)
+        if unique:
+            # Fichiers identiques (même SHA-256) : seule la première occurrence
+            # (plus petit identifiant) répondant aux MÊMES filtres est montrée,
+            # pour ne jamais masquer un média dont l'autre copie est hors filtre.
+            inner = re.sub(r"\bmd\.", "md2.", re.sub(r"\bm\.", "m2.", " AND ".join(where)))
+            where.append(
+                "NOT EXISTS (SELECT 1 FROM media_hashes h1 JOIN media_hashes h2 ON h2.sha256 = h1.sha256 "
+                "AND h2.media_id < h1.media_id JOIN medias md2 ON md2.id = h2.media_id "
+                f"JOIN messages m2 ON m2.id = md2.message_pk WHERE h1.media_id = md.id AND {inner})")
+            params = params + list(params)
         return " AND ".join(where), params
 
     def gallery_count(self, types: tuple[str, ...], conversation_id: str | None = None, sender: str | None = None,
-                      year: str | None = None, archive_id: int | None = None) -> int:
-        w, p = self._gallery_where(types, conversation_id, sender, year, archive_id)
+                      year: str | None = None, archive_id: int | None = None, unique: bool = False) -> int:
+        w, p = self._gallery_where(types, conversation_id, sender, year, archive_id, unique)
         return self.conn.execute(
             f"SELECT COUNT(*) FROM medias md JOIN messages m ON m.id = md.message_pk WHERE {w}", p).fetchone()[0]
 
     def gallery_page(self, types: tuple[str, ...], conversation_id: str | None = None, sender: str | None = None,
                      year: str | None = None, archive_id: int | None = None, newest_first: bool = True,
-                     offset: int = 0, limit: int = 200) -> list[MediaRow]:
+                     offset: int = 0, limit: int = 200, unique: bool = False) -> list[MediaRow]:
         """Médias de toute la bibliothèque (ou d'une conversation), paginés, avec leur contexte."""
-        w, p = self._gallery_where(types, conversation_id, sender, year, archive_id)
+        w, p = self._gallery_where(types, conversation_id, sender, year, archive_id, unique)
         order = "DESC" if newest_first else "ASC"
         rows = self.conn.execute(
             f"""SELECT md.*, m.archive_id, m.source_file, m.seq, m.date_local, m.sender, m.conversation_id AS cid,
-                       c.name AS cname
+                       c.name AS cname, m.message_id AS tg_id
                 FROM medias md JOIN messages m ON m.id = md.message_pk
                 JOIN conversations c ON c.id = m.conversation_id
                 WHERE {w} ORDER BY m.date_utc {order}, m.seq {order}, md.ordinal LIMIT ? OFFSET ?""",
@@ -680,6 +693,7 @@ class LibraryRepository:
             mr = self._media_row(r, r["archive_id"], r["source_file"])
             mr.message_seq, mr.message_date, mr.message_sender = r["seq"], r["date_local"], r["sender"]
             mr.conversation_id, mr.conversation_name, mr.file_size = r["cid"], r["cname"], r["file_size"]
+            mr.message_id, mr.ordinal = r["tg_id"], r["ordinal"]
             out.append(mr)
         return out
 
@@ -726,6 +740,10 @@ class LibraryRepository:
             self._roots[archive_id] = (Path(r[0]), r[1])
         return self._roots[archive_id]
 
+    def resolve_path(self, archive_id: int, source_file: str, rel: str | None) -> Path | None:
+        """Chemin absolu d'un média référencé dans un fichier HTML (None si invalide ou hors archive)."""
+        return self._resolve(archive_id, source_file, rel)
+
     def _resolve(self, archive_id: int, source_file: str, rel: str | None) -> Path | None:
         if not rel:
             return None
@@ -742,7 +760,7 @@ class LibraryRepository:
             abs_thumbnail=self._resolve(archive_id, source_file, r["thumbnail_path"]),
             duration_raw=r["duration_raw"], title=r["title"], description=r["description"],
             status=r["status"], thumb_width=r["thumb_width"], thumb_height=r["thumb_height"],
-            not_included=bool(r["not_included"]))
+            not_included=bool(r["not_included"]), ordinal=r["ordinal"])
 
     def _hydrate(self, rows) -> list[MessageRow]:
         if not rows:
@@ -753,7 +771,10 @@ class LibraryRepository:
         medias: dict[int, list[MediaRow]] = {}
         for md in self.conn.execute(f"SELECT * FROM medias WHERE message_pk IN ({marks}) ORDER BY ordinal", pks):
             src = by_pk[md["message_pk"]]
-            medias.setdefault(md["message_pk"], []).append(self._media_row(md, src["archive_id"], src["source_file"]))
+            mrow = self._media_row(md, src["archive_id"], src["source_file"])
+            mrow.conversation_id, mrow.message_id = src["conversation_id"], src["message_id"]
+            mrow.message_seq, mrow.message_date, mrow.message_sender = src["seq"], src["date_local"], src["sender"]
+            medias.setdefault(md["message_pk"], []).append(mrow)
         reactions: dict[int, list[ReactionRow]] = {}
         for rc in self.conn.execute(f"SELECT * FROM reactions WHERE message_pk IN ({marks}) ORDER BY id", pks):
             src = by_pk[rc["message_pk"]]
@@ -780,6 +801,22 @@ class LibraryRepository:
                     (conv_id, *targets)):
                 previews.setdefault(t[0], ReplyPreview(t[0], t[1], t[2], t[3] or "", t[4]))
 
+        # Données personnelles (favoris, notes, collections) : une requête chacune par page
+        mids = [r["message_id"] for r in rows if r["kind"] == "default"]
+        favs: set[int] = set()
+        notes: dict[int, str] = {}
+        colls: dict[int, int] = {}
+        if mids:
+            mm = ",".join("?" * len(mids))
+            p = (conv_id, *mids)
+            favs = {x[0] for x in self.conn.execute(
+                f"SELECT message_id FROM user_favorites WHERE conversation_id = ? AND message_id IN ({mm})", p)}
+            notes = {x[0]: x[1] for x in self.conn.execute(
+                f"SELECT message_id, note FROM user_notes WHERE conversation_id = ? AND message_id IN ({mm})", p)}
+            colls = {x[0]: x[1] for x in self.conn.execute(
+                f"SELECT message_id, COUNT(DISTINCT collection_id) FROM user_collection_items "
+                f"WHERE conversation_id = ? AND message_id IN ({mm}) GROUP BY message_id", p)}
+
         out = []
         for r in rows:
             _, archive_name = self._root(r["archive_id"])
@@ -794,6 +831,9 @@ class LibraryRepository:
                 signature=r["signature"], archive_name=archive_name,
                 media=medias.get(r["id"], []), reactions=reactions.get(r["id"], []),
                 links=links.get(r["id"], []))
+            if r["kind"] == "default" and r["conversation_id"] == conv_id:
+                mid = r["message_id"]
+                mr.favorite, mr.note, mr.collections = mid in favs, notes.get(mid), colls.get(mid, 0)
             if r["reply_to_message_id"] is not None and r["kind"] == "default":
                 mr.reply = previews.get(r["reply_to_message_id"]) or ReplyPreview(
                     r["reply_to_message_id"], None, None, r["reply_raw"] or "Message introuvable", None)

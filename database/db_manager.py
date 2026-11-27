@@ -203,6 +203,91 @@ MIGRATIONS: list[list[str]] = [
             conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE
         )""",
     ],
+    # --- v3 : données personnelles Telegramor et empreintes des médias -------
+    # Les tables user_* contiennent ce que l'utilisateur crée dans Telegramor
+    # (favoris, notes, collections, lecture, recherches). Elles sont liées aux
+    # messages par la clé stable (conversation, identifiant Telegram) et SANS
+    # clé étrangère vers messages : elles survivent à la réindexation ou à la
+    # suppression puis réimportation d'une archive. Rien n'est jamais écrit
+    # dans les exports Telegram.
+    [
+        """CREATE TABLE user_favorites (
+            conversation_id TEXT NOT NULL,
+            message_id      INTEGER NOT NULL,
+            created_at      TEXT NOT NULL,
+            PRIMARY KEY (conversation_id, message_id)
+        )""",
+        """CREATE TABLE user_notes (
+            id              INTEGER PRIMARY KEY,
+            conversation_id TEXT NOT NULL,
+            message_id      INTEGER NOT NULL,
+            note            TEXT NOT NULL,
+            created_at      TEXT NOT NULL,
+            updated_at      TEXT NOT NULL,
+            UNIQUE (conversation_id, message_id)
+        )""",
+        """CREATE VIRTUAL TABLE user_notes_fts USING fts5(
+            note, content='user_notes', content_rowid='id',
+            tokenize='unicode61 remove_diacritics 2'
+        )""",
+        """CREATE TRIGGER user_notes_ai AFTER INSERT ON user_notes BEGIN
+            INSERT INTO user_notes_fts(rowid, note) VALUES (new.id, new.note);
+        END""",
+        """CREATE TRIGGER user_notes_ad AFTER DELETE ON user_notes BEGIN
+            INSERT INTO user_notes_fts(user_notes_fts, rowid, note) VALUES ('delete', old.id, old.note);
+        END""",
+        """CREATE TRIGGER user_notes_au AFTER UPDATE OF note ON user_notes BEGIN
+            INSERT INTO user_notes_fts(user_notes_fts, rowid, note) VALUES ('delete', old.id, old.note);
+            INSERT INTO user_notes_fts(rowid, note) VALUES (new.id, new.note);
+        END""",
+        """CREATE TABLE user_collections (
+            id          INTEGER PRIMARY KEY,
+            name        TEXT NOT NULL UNIQUE,
+            description TEXT NOT NULL DEFAULT '',
+            created_at  TEXT NOT NULL
+        )""",
+        """CREATE TABLE user_collection_items (
+            id              INTEGER PRIMARY KEY,
+            collection_id   INTEGER NOT NULL REFERENCES user_collections(id) ON DELETE CASCADE,
+            conversation_id TEXT NOT NULL,
+            message_id      INTEGER NOT NULL,
+            media_ordinal   INTEGER NOT NULL DEFAULT -1,   -- -1 : le message entier
+            added_at        TEXT NOT NULL,
+            UNIQUE (collection_id, conversation_id, message_id, media_ordinal)
+        )""",
+        "CREATE INDEX idx_user_items_message ON user_collection_items(conversation_id, message_id)",
+        """CREATE TABLE user_read_markers (
+            conversation_id TEXT PRIMARY KEY,
+            message_id      INTEGER NOT NULL,             -- dernier message lu dans Telegramor
+            updated_at      TEXT NOT NULL
+        )""",
+        """CREATE TABLE user_saved_searches (
+            id          INTEGER PRIMARY KEY,
+            name        TEXT NOT NULL UNIQUE,
+            query_json  TEXT NOT NULL,
+            created_at  TEXT NOT NULL
+        )""",
+        """CREATE TABLE user_search_history (
+            id          INTEGER PRIMARY KEY,
+            query_json  TEXT NOT NULL UNIQUE,
+            used_at     TEXT NOT NULL
+        )""",
+        # Empreintes SHA-256 des fichiers médias (détection des doublons exacts).
+        # media_hashes suit les lignes de medias ; file_hash_cache évite de relire
+        # un fichier inchangé (même taille, même date) après une réindexation.
+        """CREATE TABLE media_hashes (
+            media_id    INTEGER PRIMARY KEY REFERENCES medias(id) ON DELETE CASCADE,
+            sha256      TEXT NOT NULL,
+            size        INTEGER NOT NULL
+        )""",
+        "CREATE INDEX idx_media_hashes_sha ON media_hashes(sha256)",
+        """CREATE TABLE file_hash_cache (
+            path        TEXT PRIMARY KEY,
+            size        INTEGER NOT NULL,
+            mtime_ns    INTEGER NOT NULL,
+            sha256      TEXT NOT NULL
+        )""",
+    ],
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

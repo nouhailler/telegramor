@@ -19,7 +19,7 @@ cp -r app database importer services ui main.py "$LIB/"
 find "$LIB" -name '__pycache__' -prune -exec rm -rf {} +
 cp README.md "$STAGE/usr/share/doc/$PKG/"
 cp -r docs "$STAGE/usr/share/doc/$PKG/"
-rm -rf "$STAGE/usr/share/doc/$PKG/docs/captures"     # captures d'écran : dans le dépôt seulement
+rm -rf "$STAGE/usr/share/doc/$PKG/docs/captures" "$STAGE/usr/share/doc/$PKG/docs/screenshots"   # captures : dépôt seulement
 cp app/resources/icon.svg "$STAGE/usr/share/icons/hicolor/scalable/apps/$PKG.svg"
 
 cat > "$STAGE/usr/bin/$PKG" <<LAUNCH
@@ -50,17 +50,19 @@ Priority: optional
 Architecture: all
 Installed-Size: $SIZE
 Depends: python3 (>= 3.11), python3-pyside6.qtcore, python3-pyside6.qtgui, python3-pyside6.qtwidgets, python3-pyside6.qtsvg, python3-bs4, python3-lxml
-Recommends: python3-pyside6.qtmultimedia, python3-pyside6.qtmultimediawidgets, qt6-svg-plugins, qt6-translations-l10n
+Recommends: python3-pyside6.qtmultimedia, python3-pyside6.qtmultimediawidgets, python3-pyside6.qtprintsupport, qt6-svg-plugins, qt6-translations-l10n
 Maintainer: nouhailler <nouhailler@users.noreply.github.com>
 Homepage: https://github.com/nouhailler/telegramor
 Description: explorateur local d'exports HTML de Telegram
  Telegram Archive Explorer importe les exports HTML de Telegram Desktop dans
  une bibliothèque locale SQLite (recherche plein texte FTS5) et les affiche
  dans une interface proche de Telegram : conversations, recherche globale,
- galerie de médias, statistiques et chronologie.
+ galerie de médias, statistiques et chronologie, favoris, notes et
+ collections personnelles, export et impression, diagnostic et sauvegarde.
  .
- Fonctionnement 100 % local : aucune connexion réseau, le JavaScript des
- exports n'est jamais exécuté et les fichiers originaux ne sont pas modifiés.
+ Fonctionnement 100 % local : le JavaScript des exports n'est jamais exécuté
+ et les fichiers originaux ne sont pas modifiés. Seule la vérification des
+ mises à jour (facultative, désactivée par défaut) contacte GitHub.
 CONTROL
 
 chmod 755 "$STAGE/usr/bin/$PKG"

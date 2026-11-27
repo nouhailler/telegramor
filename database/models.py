@@ -108,6 +108,8 @@ class MediaRow:
     conversation_id: str | None = None
     conversation_name: str | None = None
     file_size: int | None = None
+    message_id: int | None = None   # identifiant Telegram du message (clé des données personnelles)
+    ordinal: int = 0                # rang du média dans son message
 
     @property
     def file_available(self) -> bool:
@@ -166,3 +168,7 @@ class MessageRow:
     reactions: list[ReactionRow] = field(default_factory=list)
     links: list[str] = field(default_factory=list)
     reply: ReplyPreview | None = None
+    # Données personnelles Telegramor (jamais issues de l'export)
+    favorite: bool = False
+    note: str | None = None
+    collections: int = 0

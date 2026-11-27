@@ -7,6 +7,7 @@ import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from typing import Iterable
 
 from database.db_manager import Database
 
@@ -46,6 +47,12 @@ class Statistics:
     per_weekday: list[int] = field(default_factory=lambda: [0] * 7)       # lundi = 0
     heatmap: list[list[int]] = field(default_factory=lambda: [[0] * 24 for _ in range(7)])
     top_words: list[tuple[str, int]] = field(default_factory=list)
+    top_bigrams: list[tuple[str, int]] = field(default_factory=list)    # groupes de deux mots
+    top_trigrams: list[tuple[str, int]] = field(default_factory=list)   # groupes de trois mots
+    avg_length: float = 0.0                                             # caractères par message texte
+    words_sampled: int = 0                                              # messages analysés pour les mots
+    date_from: str | None = None
+    date_to: str | None = None
 
 
 def _fold(s: str) -> str:
@@ -68,8 +75,12 @@ def _months_between(first: str, last: str) -> list[str]:
 
 
 def compute(db: Database, conversation_id: str | None = None, sender: str | None = None,
-            words_limit: int = 40, words_sample: int = 300_000) -> Statistics:
-    """Calcule les statistiques (messages ordinaires uniquement, sans doublons)."""
+            words_limit: int = 40, words_sample: int = 300_000, date_from: str | None = None,
+            date_to: str | None = None, excluded_words: Iterable[str] = (), ngrams_limit: int = 20) -> Statistics:
+    """Calcule les statistiques (messages ordinaires uniquement, sans doublons).
+
+    date_from / date_to : jours locaux inclus (AAAA-MM-JJ). words_limit = 0 : sans analyse lexicale.
+    """
     c = db.conn
     where = ["m.kind = 'default'", "m.is_duplicate = 0"]
     params: list = []
@@ -79,8 +90,14 @@ def compute(db: Database, conversation_id: str | None = None, sender: str | None
     if sender:
         where.append("m.sender = ?")
         params.append(sender)
+    if date_from:
+        where.append("m.day >= ?")
+        params.append(date_from)
+    if date_to:
+        where.append("m.day <= ?")
+        params.append(date_to)
     w = " AND ".join(where)
-    st = Statistics()
+    st = Statistics(date_from=date_from, date_to=date_to)
     st.messages, st.conversations, st.participants, st.first_day, st.last_day = c.execute(
         f"SELECT COUNT(*), COUNT(DISTINCT m.conversation_id), COUNT(DISTINCT m.sender), MIN(m.day), MAX(m.day) "
         f"FROM messages m WHERE {w}", params).fetchone()
@@ -138,18 +155,173 @@ def compute(db: Database, conversation_id: str | None = None, sender: str | None
     st.links = c.execute(f"SELECT COUNT(*) FROM links l JOIN messages m ON m.id = l.message_pk WHERE {w}",
                          params).fetchone()[0]
 
+    st.avg_length = round(c.execute(f"SELECT AVG(LENGTH(m.text)) FROM messages m WHERE {w} AND m.text != ''",
+                                    params).fetchone()[0] or 0.0, 1)
+    if words_limit <= 0:
+        return st
+
+    stop = _STOP_FOLDED | {_fold(x.strip()) for x in excluded_words if x.strip()}
     words: Counter[str] = Counter()
+    bigrams: Counter[tuple[str, str]] = Counter()
+    trigrams: Counter[tuple[str, str, str]] = Counter()
     display: dict[str, Counter[str]] = {}
     for (text,) in c.execute(f"SELECT m.text FROM messages m WHERE {w} AND m.text != '' "
                              f"ORDER BY m.date_utc DESC LIMIT ?", (*params, words_sample)):
+        st.words_sampled += 1
+        kept: list[str] = []          # mots significatifs consécutifs (une coupure à chaque mot courant)
         for raw in WORD_RE.findall(text):
             key = _fold(raw)
-            if key in _STOP_FOLDED:
+            if key in stop:
+                kept.append("")
                 continue
             words[key] += 1
             display.setdefault(key, Counter())[raw.lower()] += 1
-    st.top_words = [(display[k].most_common(1)[0][0], n) for k, n in words.most_common(words_limit)]
+            kept.append(key)
+        for i in range(len(kept) - 1):
+            a, b = kept[i], kept[i + 1]
+            if a and b and a != b:
+                bigrams[(a, b)] += 1
+                if i + 2 < len(kept) and kept[i + 2] and kept[i + 2] not in (a, b):
+                    trigrams[(a, b, kept[i + 2])] += 1
+
+    def show(key: str) -> str:
+        return display[key].most_common(1)[0][0]
+
+    st.top_words = [(show(k), n) for k, n in words.most_common(words_limit)]
+    st.top_bigrams = [(" ".join(map(show, k)), n) for k, n in bigrams.most_common(ngrams_limit) if n > 1]
+    st.top_trigrams = [(" ".join(map(show, k)), n) for k, n in trigrams.most_common(ngrams_limit) if n > 1]
     return st
+
+
+# --------------------------------------------------------------------------- #
+# Comparaison de deux portées (conversations, années, périodes)
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class Scope:
+    label: str
+    conversation_id: str | None = None
+    sender: str | None = None
+    date_from: str | None = None
+    date_to: str | None = None
+
+
+@dataclass
+class Comparison:
+    a: Scope
+    b: Scope
+    stats_a: Statistics
+    stats_b: Statistics
+    rows: list[tuple[str, str, str, str]]         # indicateur, A, B, écart (normalisé)
+    hours_pct: tuple[list[float], list[float]]
+    weekdays_pct: tuple[list[float], list[float]]
+
+
+def _span(st: Statistics) -> int:
+    """Durée de la période en jours (période demandée si fournie, sinon période d'activité)."""
+    if st.date_from and st.date_to:
+        return (date.fromisoformat(st.date_to) - date.fromisoformat(st.date_from)).days + 1
+    return st.span_days
+
+
+def _pct(values: list[int]) -> list[float]:
+    total = sum(values) or 1
+    return [round(100 * v / total, 1) for v in values]
+
+
+def _fmt_num(x: float) -> str:
+    """Nombre à la française : espace fine insécable pour les milliers, virgule décimale."""
+    nb = "\u202f"
+    if isinstance(x, float) and not x.is_integer():
+        digits = 2 if abs(x) < 1 else 1
+        return f"{x:,.{digits}f}".replace(",", nb).replace(".", ",")
+    return f"{int(x):,}".replace(",", nb)
+
+
+def _delta(a: float, b: float) -> str:
+    if not a and not b:
+        return "="
+    if not a:
+        return "nouveau"
+    d = 100 * (b - a) / a
+    return "=" if abs(d) < 0.5 else f"{d:+.0f} %"
+
+
+def compare(db: Database, a: Scope, b: Scope) -> Comparison:
+    """Compare deux portées. Les volumes sont ramenés à la durée de chaque période
+    (messages par jour) pour que des périodes de longueurs différentes restent comparables."""
+    sa = compute(db, a.conversation_id, a.sender, words_limit=0, date_from=a.date_from, date_to=a.date_to)
+    sb = compute(db, b.conversation_id, b.sender, words_limit=0, date_from=b.date_from, date_to=b.date_to)
+    rows: list[tuple[str, str, str, str]] = []
+
+    def add(label: str, va: float, vb: float, normalized: bool = True) -> None:
+        rows.append((label, _fmt_num(va), _fmt_num(vb), _delta(va, vb) if normalized else ""))
+
+    span_a, span_b = _span(sa), _span(sb)
+    media_a, media_b = sum(sa.media.values()), sum(sb.media.values())
+    add("Durée de la période (jours)", span_a, span_b, normalized=False)
+    add("Messages", sa.messages, sb.messages, normalized=False)
+    add("Messages par jour (sur la période)", sa.messages / span_a if span_a else 0.0,
+        sb.messages / span_b if span_b else 0.0)
+    add("Jours actifs", sa.active_days, sb.active_days, normalized=False)
+    add("Part de jours actifs (%)", 100 * sa.active_days / span_a if span_a else 0.0,
+        100 * sb.active_days / span_b if span_b else 0.0)
+    add("Messages par jour actif", sa.per_active_day, sb.per_active_day)
+    add("Participants actifs", sa.participants, sb.participants)
+    add("Médias", media_a, media_b, normalized=False)
+    add("Médias pour 100 messages", 100 * media_a / sa.messages if sa.messages else 0.0,
+        100 * media_b / sb.messages if sb.messages else 0.0)
+    add("Liens pour 100 messages", 100 * sa.links / sa.messages if sa.messages else 0.0,
+        100 * sb.links / sb.messages if sb.messages else 0.0)
+    add("Longueur moyenne d'un message (caractères)", sa.avg_length, sb.avg_length)
+    peak = lambda v: f"{max(range(24), key=lambda h: v[h])} h" if any(v) else "—"  # noqa: E731
+    rows.append(("Heure la plus active", peak(sa.per_hour), peak(sb.per_hour), ""))
+    wd = lambda v: WEEKDAYS[max(range(7), key=lambda d: v[d])] if any(v) else "—"  # noqa: E731
+    rows.append(("Jour de la semaine le plus actif", wd(sa.per_weekday), wd(sb.per_weekday), ""))
+    return Comparison(a, b, sa, sb, rows, (_pct(sa.per_hour), _pct(sb.per_hour)),
+                      (_pct(sa.per_weekday), _pct(sb.per_weekday)))
+
+
+# --------------------------------------------------------------------------- #
+# Export CSV
+# --------------------------------------------------------------------------- #
+
+def to_csv(st: Statistics, scope_label: str) -> str:
+    """Toutes les séries d'une analyse, avec leur unité, dans un CSV (séparateur « ; », UTF-8)."""
+    import csv
+    import io
+    buf = io.StringIO()
+    w = csv.writer(buf, delimiter=";")
+    w.writerow(["Portée", scope_label])
+    w.writerow(["Période", st.date_from or st.first_day or "", st.date_to or st.last_day or ""])
+    w.writerow([])
+    w.writerow(["Indicateur", "Valeur", "Unité"])
+    for label, value, unit in (("Messages", st.messages, "messages"), ("Conversations", st.conversations, ""),
+                               ("Participants", st.participants, "personnes"),
+                               ("Jours actifs", st.active_days, "jours"), ("Durée", st.span_days, "jours"),
+                               ("Messages par jour actif", st.per_active_day, "messages/jour"),
+                               ("Longueur moyenne", st.avg_length, "caractères"), ("Liens", st.links, "liens")):
+        w.writerow([label, value, unit])
+
+    def section(title: str, header: list[str], rows) -> None:
+        w.writerow([])
+        w.writerow([title])
+        w.writerow(header)
+        w.writerows(rows)
+
+    section("Messages par mois", ["Mois", "Messages"], st.per_month)
+    section("Messages par année", ["Année", "Messages"], st.per_year)
+    section("Messages par heure", ["Heure", "Messages"], [(f"{h:02d}h", n) for h, n in enumerate(st.per_hour)])
+    section("Messages par jour de la semaine", ["Jour", "Messages"],
+            [(WEEKDAYS[i], n) for i, n in enumerate(st.per_weekday)])
+    section("Expéditeurs", ["Expéditeur", "Messages"], st.per_sender)
+    section("Médias", ["Type", "Nombre"], st.media.items())
+    section("Carte jour × heure", ["Jour"] + [f"{h:02d}h" for h in range(24)],
+            [[WEEKDAYS[d]] + st.heatmap[d] for d in range(7)])
+    section(f"Mots les plus fréquents ({st.words_sampled} messages analysés)", ["Mot", "Occurrences"], st.top_words)
+    section("Groupes de deux mots", ["Expression", "Occurrences"], st.top_bigrams)
+    section("Groupes de trois mots", ["Expression", "Occurrences"], st.top_trigrams)
+    return buf.getvalue()
 
 
 def weekday_label(i: int) -> str:

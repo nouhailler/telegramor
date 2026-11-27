@@ -71,12 +71,13 @@ class SearchQuery:
     has_media: bool | None = None
     has_link: bool | None = None
     filename: str | None = None
+    is_reply: bool | None = None          # réponse à un autre message (citation)
     sort: str = SORT_RELEVANCE
 
     def is_empty(self) -> bool:
         return not (self.text.strip() or self.sender or self.date_from or self.date_to
                     or self.content_type or self.has_media is not None or self.has_link is not None
-                    or self.filename)
+                    or self.filename or self.is_reply is not None)
 
 
 @dataclass
@@ -317,6 +318,8 @@ class SearchEngine:
         if q.has_link is not None:
             where.append("m.has_link = ?")
             params.append(int(q.has_link))
+        if q.is_reply is not None:
+            where.append("m.reply_to_message_id IS NOT NULL" if q.is_reply else "m.reply_to_message_id IS NULL")
         ct = q.content_type
         if ct == "text":
             where.append("m.kind = 'default' AND m.has_media = 0 AND m.text != ''")

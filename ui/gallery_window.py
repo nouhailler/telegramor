@@ -5,10 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QAbstractListModel, QModelIndex, QPoint, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QGuiApplication, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QColor, QGuiApplication, QIcon, QPixmap
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDialog, QFrame, QHBoxLayout, QHeaderView, QLabel, QListView, QMenu,
+    QAbstractItemView, QCheckBox, QComboBox, QDialog, QFrame, QHBoxLayout, QHeaderView, QLabel, QListView, QMenu,
     QPushButton, QSizePolicy, QSlider,
     QStackedWidget, QTabBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
 )
@@ -55,7 +55,7 @@ class GalleryModel(QAbstractListModel):
         self.beginResetModel()
         self.args = args
         self.total = self.repo.gallery_count(args["types"], args.get("conversation_id"), args.get("sender"),
-                                             args.get("year"), args.get("archive_id"))
+                                             args.get("year"), args.get("archive_id"), args.get("unique", False))
         self.items = self.repo.gallery_page(offset=0, limit=PAGE, **args)
         self._icons.clear()
         self._keys.clear()
@@ -181,6 +181,10 @@ class GalleryWindow(QDialog):
             filters.addWidget(ic)
             filters.addWidget(combo)
             filters.addSpacing(6)
+        self.unique_check = QCheckBox("Masquer les fichiers identiques")
+        self.unique_check.setToolTip("N'affiche qu'une occurrence des fichiers strictement identiques (SHA-256). "
+                                     "Les empreintes se calculent via Fichier › Fichiers identiques.")
+        filters.addWidget(self.unique_check)
         filters.addStretch(1)
         self.size_icon = QLabel(toolTip="Taille des miniatures")
         filters.addWidget(self.size_icon)
@@ -282,6 +286,8 @@ class GalleryWindow(QDialog):
         self._populate_filters()
         for c in (self.conv, self.sender, self.year, self.order):
             c.currentIndexChanged.connect(self.reload)
+        self.unique_check.toggled.connect(self.reload)
+        self.personal = None          # PersonalData, fourni par la fenêtre principale
         self.size_slider.valueChanged.connect(self._apply_size)
         self.resize(1180, 800)
         self.setMinimumSize(760, 520)
@@ -322,7 +328,8 @@ class GalleryWindow(QDialog):
 
     def filters(self) -> dict:
         return dict(conversation_id=self.conv.currentData(), sender=self.sender.currentData(),
-                    year=self.year.currentData(), newest_first=self.order.currentData())
+                    year=self.year.currentData(), newest_first=self.order.currentData(),
+                    unique=self.unique_check.isChecked())
 
     def reload(self) -> None:
         tab = self.tabs.currentIndex()
@@ -346,6 +353,7 @@ class GalleryWindow(QDialog):
             self.table.setHeaderLabels(["Lien", "Conversation", "Expéditeur", "Date"])
             rows = self.repo.all_links(f["conversation_id"], f["sender"], f["year"], None, f["newest_first"],
                                        limit=5000)
+            self.unique_check.setEnabled(False)
             for url, cid, cname, seq, date, sender in rows:
                 it = QTreeWidgetItem([url, cname, sender or "", short_date(date)])
                 it.setIcon(0, icons.icon("link", design.current().accent, 18))
@@ -356,6 +364,7 @@ class GalleryWindow(QDialog):
             total = len(rows)
         else:
             self.table.setHeaderLabels(["Nom", "Type", "Taille", "Conversation", "Expéditeur", "Date", "État"])
+            self.unique_check.setEnabled(True)
             rows = self.repo.gallery_page(types=types, limit=5000, **f)
             for m in rows:
                 name = m.title or (Path(m.file_path).name if m.file_path else media_label(m.media_type) or "")
@@ -420,7 +429,7 @@ class GalleryWindow(QDialog):
         if not types:
             return []
         f = self.filters()
-        total = self.repo.gallery_count(types, f["conversation_id"], f["sender"], f["year"])
+        total = self.repo.gallery_count(types, f["conversation_id"], f["sender"], f["year"], None, f["unique"])
         return self.repo.gallery_page(types=types, offset=0, limit=max(total, 1), **f)
 
     def copy_all(self) -> None:
@@ -451,6 +460,7 @@ class GalleryWindow(QDialog):
         if m.file_available:
             menu.addAction("Afficher dans le dossier", lambda: show_in_folder(m.abs_file))
             menu.addAction("Copier le chemin", lambda: QGuiApplication.clipboard().setText(str(m.abs_file)))
+        self._personal_entries(menu, m)
         menu.addSeparator()
         selected = self.selected_medias()
         if len(selected) > 1:
@@ -459,6 +469,42 @@ class GalleryWindow(QDialog):
             menu.addAction("Copier vers un dossier…", lambda: copy_to_folder([m], self, self.settings)).setEnabled(
                 m.file_available)
         menu.exec(global_pos)
+
+    def _personal_entries(self, menu: QMenu, m: MediaRow) -> None:
+        """Occurrences du même fichier, favoris et collections (données personnelles)."""
+        from services import media_dedup
+        occ = media_dedup.occurrences(self.repo.db, self.repo, m.id)
+        others = [o for o in occ if o.media_id != m.id]
+        if not occ:
+            menu.addAction("Occurrences : empreinte non calculée").setEnabled(False)
+        elif others:
+            sub = menu.addMenu(icons.icon("copy"), f"Autres occurrences de ce fichier ({len(others)})")
+            for o in others:
+                sub.addAction(f"{o.conversation_name} · {short_date(o.date_local)} · {o.sender or ''}",
+                              lambda o=o: self.go_to_message.emit(o.conversation_id, o.seq))
+        if self.personal is None or m.message_id is None or not m.conversation_id:
+            return
+        menu.addSeparator()
+        fav = self.personal.is_favorite(m.conversation_id, m.message_id)
+        menu.addAction(icons.icon("star"), "Retirer le message des favoris" if fav else "Ajouter le message aux favoris",
+                       lambda: self.personal.set_favorite(m.conversation_id, m.message_id, not fav))
+        sub = menu.addMenu(icons.icon("collection"), "Ajouter à une collection")
+        for c in self.personal.collections():
+            sub.addAction(c.name, lambda cid=c.id: self.personal.add_to_collection(
+                cid, m.conversation_id, m.message_id, m.ordinal))
+        sub.addSeparator()
+        sub.addAction(icons.icon("plus"), "Nouvelle collection…", lambda: self._new_collection_with(m))
+
+    def _new_collection_with(self, m: MediaRow) -> None:
+        from PySide6.QtWidgets import QInputDialog, QMessageBox
+        name, ok = QInputDialog.getText(self, "Nouvelle collection", "Nom de la collection :")
+        if ok and name.strip():
+            try:
+                cid = self.personal.create_collection(name)
+            except ValueError as exc:
+                QMessageBox.warning(self, "Nouvelle collection", str(exc))
+                return
+            self.personal.add_to_collection(cid, m.conversation_id, m.message_id, m.ordinal)
 
     def _grid_menu(self, pos) -> None:
         idx = self.grid.indexAt(pos)

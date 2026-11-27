@@ -31,7 +31,6 @@ class DensityDelegate(QStyledItemDelegate):
         th = design.current()
         n = index.data(ROLE_COUNT) or 0
         vmax = index.data(ROLE_MAX) or 1
-        fm = option.fontMetrics
         count_w = 44
         track = QRectF(option.rect.left() + 4, option.rect.center().y() - 3, option.rect.width() - count_w - 12, 6)
         w = max(track.width() * n / vmax, 4)

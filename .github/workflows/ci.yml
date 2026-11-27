@@ -1,0 +1,88 @@
+# Intégration continue : tests, analyse statique et construction du paquet Debian.
+# Exécutée dans un conteneur Debian 13 (cible de distribution prioritaire) avec
+# les paquets PySide6 de Debian, exactement comme sur le poste de l'utilisateur.
+# L'interface est testée hors écran (QT_QPA_PLATFORM=offscreen) : la CI vérifie
+# la construction et le comportement des fenêtres, pas leur rendu visuel.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Tests et paquet Debian
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    timeout-minutes: 40
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONDONTWRITEBYTECODE: "1"
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Dépendances système
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates dpkg-dev \
+            python3 python3-pytest python3-bs4 python3-lxml flake8 \
+            python3-pyside6.qtcore python3-pyside6.qtgui python3-pyside6.qtwidgets python3-pyside6.qtsvg \
+            python3-pyside6.qtmultimedia python3-pyside6.qtmultimediawidgets \
+            qt6-svg-plugins fonts-dejavu-core libegl1 libgl1 libxkbcommon0 libfontconfig1
+
+      - uses: actions/checkout@v4
+
+      - name: Analyse statique (flake8, règles pyflakes)
+        run: python3 -m flake8 --select=F app database importer services ui tests main.py
+
+      - name: Compilation de tous les modules
+        run: python3 -m compileall -q app database importer services ui main.py
+
+      - name: Tests (pytest)
+        run: python3 -m pytest -q -ra --junitxml=test-results.xml
+
+      - name: Construction du paquet Debian
+        run: ./packaging/build_deb.sh
+
+      - name: Vérification du paquet
+        run: |
+          set -e
+          DEB=$(ls dist/*.deb)
+          dpkg-deb --info "$DEB"
+          dpkg-deb --contents "$DEB" > contents.txt
+          for f in ./usr/bin/telegram-archive-explorer \
+                   ./usr/share/applications/telegram-archive-explorer.desktop \
+                   ./usr/share/icons/hicolor/scalable/apps/telegram-archive-explorer.svg \
+                   ./usr/lib/telegram-archive-explorer/main.py \
+                   ./usr/lib/telegram-archive-explorer/services/backup.py; do
+            grep -q " $f\$" contents.txt || { echo "Fichier manquant dans le paquet : $f"; exit 1; }
+          done
+          if grep -E "tests/|\.venv|__pycache__|docs/captures|docs/screenshots" contents.txt; then
+            echo "Le paquet contient des fichiers qui ne devraient pas y être"; exit 1
+          fi
+          VERSION=$(sed -n 's/^APP_VERSION = "\(.*\)"/\1/p' app/main_window.py)
+          dpkg-deb --field "$DEB" Version | grep -q "^${VERSION}" || { echo "Version incohérente"; exit 1; }
+          dpkg-deb --field "$DEB" Depends | grep -q python3-pyside6.qtwidgets
+          # installation réelle dans le conteneur, puis lancement de l'interface hors écran
+          apt-get install -y "./$DEB"
+          timeout 20 python3 -c "import sys; sys.path.insert(0, '/usr/lib/telegram-archive-explorer'); \
+            from services.dependencies import missing; m = missing(required_only=True); \
+            print('Dépendances obligatoires manquantes :', [s.dep.key for s in m]); sys.exit(1 if m else 0)"
+
+      - name: Résultats des tests
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resultats-tests
+          path: test-results.xml
+          if-no-files-found: ignore
+
+      - name: Paquet Debian
+        uses: actions/upload-artifact@v4
+        with:
+          name: paquet-debian
+          path: dist/*.deb
+          if-no-files-found: error

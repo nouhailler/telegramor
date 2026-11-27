@@ -11,17 +11,18 @@ from __future__ import annotations
 from html import escape
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath
+from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPainterPath
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QScrollArea, QSizePolicy, QToolTip,
-    QVBoxLayout, QWidget,
+    QComboBox, QDialog, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMenu,
+    QPushButton, QScrollArea, QSizePolicy, QTableWidget, QTableWidgetItem, QToolButton, QToolTip, QVBoxLayout,
+    QWidget,
 )
 
 from app import design, icons
 from app.styles import Theme
 from database.db_manager import Database
 from database.repositories import LibraryRepository, media_label
-from services.statistics_service import Statistics, compute, weekday_label
+from services.statistics_service import Scope, Statistics, compare, compute, to_csv, weekday_label
 
 from .components import dialog_header
 from .formatting import MOIS_COURTS, day_medium, month_label, plural
@@ -334,9 +335,11 @@ def _section(title: str, widget: QWidget, note: str = "") -> QWidget:
 
 class StatisticsWindow(QDialog):
     go_to_day = Signal(str, str)        # conversation, jour AAAA-MM-JJ
+    search_word = Signal(str)           # clic sur un mot ou une expression : recherche globale
 
-    def __init__(self, db: Database, repo: LibraryRepository, theme: Theme, parent=None) -> None:
+    def __init__(self, db: Database, repo: LibraryRepository, theme: Theme, parent=None, settings=None) -> None:
         super().__init__(parent)
+        self.settings = settings
         self.setWindowTitle("Statistiques")
         self.setWindowFlag(Qt.WindowMaximizeButtonHint, True)
         self.db, self.repo, self.theme = db, repo, theme
@@ -362,6 +365,41 @@ class StatisticsWindow(QDialog):
         top.addWidget(scope)
         top.addWidget(self.conv)
         top.addWidget(self.sender)
+        from ui.advanced_search import OptionalDate
+        self.date_from = OptionalDate("Depuis le")
+        self.date_to = OptionalDate("Jusqu'au")
+        for d in (self.date_from, self.date_to):
+            d.changed.connect(self.refresh)
+        self.exclude = QLineEdit(placeholderText="Mots à exclure de l'analyse (séparés par des virgules)")
+        self.exclude.setClearButtonEnabled(True)
+        if settings is not None:
+            self.exclude.setText(str(settings.s.value("stats/excluded_words", "")))
+        self.exclude.editingFinished.connect(self._exclusions_changed)
+        export = QToolButton(text="Exporter")
+        export.setProperty("variant", "secondary")
+        export.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        export.setPopupMode(QToolButton.InstantPopup)
+        icons.bind(export, "export", "muted", 16)
+        em = QMenu(export)
+        em.addAction("Données (CSV)…", self.export_csv)
+        em.addAction("Tableau de bord (image PNG)…", self.export_png)
+        export.setMenu(em)
+        cmp_btn = QPushButton("Comparer…")
+        icons.bind(cmp_btn, "chart", "muted", 16)
+        cmp_btn.setToolTip("Comparer deux conversations, deux années ou deux périodes")
+        cmp_btn.clicked.connect(self.open_compare)
+        second = QHBoxLayout()
+        second.setSpacing(8)
+        second.setContentsMargins(20, 0, 20, 0)
+        period = QLabel("Période")
+        period.setProperty("muted", True)
+        second.addWidget(period)
+        second.addWidget(self.date_from)
+        second.addWidget(self.date_to)
+        second.addWidget(self.exclude, 1)
+        second.addWidget(cmp_btn)
+        second.addWidget(export)
+        self._second = second
 
         self.tiles = QGridLayout()
         self.months = BarChart(theme)
@@ -373,6 +411,10 @@ class StatisticsWindow(QDialog):
         self.heat = Heatmap(theme)
         self.words = QLabel(wordWrap=True)
         self.words.setTextFormat(Qt.RichText)
+        self.words.linkActivated.connect(lambda w: self.search_word.emit(w))
+        self.ngrams = QLabel(wordWrap=True)
+        self.ngrams.setTextFormat(Qt.RichText)
+        self.ngrams.linkActivated.connect(lambda w: self.search_word.emit(w))
         self.month_note = QLabel()
 
         body = QWidget()
@@ -394,7 +436,10 @@ class StatisticsWindow(QDialog):
         row2.addWidget(_section("Expéditeurs", self.senders), 1)
         row2.addWidget(_section("Médias et liens", self.media), 1)
         b.addLayout(row2)
-        b.addWidget(_section("Mots les plus fréquents", self.words, "hors mots courants"))
+        b.addWidget(_section("Mots les plus fréquents", self.words,
+                             "hors mots courants · cliquer sur un mot pour le rechercher"))
+        b.addWidget(_section("Expressions fréquentes", self.ngrams, "groupes de deux et trois mots, vus au moins "
+                             "deux fois · cliquer pour rechercher"))
         b.addStretch(1)
         area = QScrollArea()
         area.setWidget(body)
@@ -406,7 +451,9 @@ class StatisticsWindow(QDialog):
         lay.setSpacing(12)
         top.setContentsMargins(20, 0, 20, 0)
         lay.addLayout(top)
+        lay.addLayout(self._second)
         lay.addWidget(area, 1)
+        self._body = body
         self.setMinimumSize(760, 560)
         self.resize(1120, 880)
         self.refresh()
@@ -414,9 +461,27 @@ class StatisticsWindow(QDialog):
     def set_conversation(self, conv_id: str | None) -> None:
         self.conv.setCurrentIndex(max(self.conv.findData(conv_id), 0))
 
+    def _excluded(self) -> list[str]:
+        return [w.strip() for w in self.exclude.text().split(",") if w.strip()]
+
+    def _exclusions_changed(self) -> None:
+        if self.settings is not None:
+            self.settings.s.setValue("stats/excluded_words", self.exclude.text())
+        self.refresh()
+
+    def scope_label(self) -> str:
+        parts = [self.conv.currentText()]
+        if self.sender.currentData():
+            parts.append(self.sender.currentText())
+        a, b = self.date_from.value(), self.date_to.value()
+        if a or b:
+            parts.append(f"{a or '…'} → {b or '…'}")
+        return " · ".join(parts)
+
     def refresh(self) -> None:
         conv_id = self.conv.currentData()
-        st = self.stats = compute(self.db, conv_id, self.sender.currentData())
+        st = self.stats = compute(self.db, conv_id, self.sender.currentData(), date_from=self.date_from.value(),
+                                  date_to=self.date_to.value(), excluded_words=self._excluded())
         while self.tiles.count():
             w = self.tiles.takeAt(0).widget()
             if w:
@@ -466,12 +531,60 @@ class StatisticsWindow(QDialog):
                 th = design.current()
                 weight = 600 if n >= top * 0.5 else 400
                 color = th.accent_text if n >= top * 0.6 else th.text
-                parts.append(f"<span style='font-size:{size}%; font-weight:{weight}; color:{color}' "
-                             f"title='{n}'>{escape(w)}</span>"
+                parts.append(f"<a href='{escape(w, quote=True)}' style='text-decoration:none; font-size:{size}%; "
+                             f"font-weight:{weight}; color:{color}' title='{n}'>{escape(w)}</a>"
                              f"<span style='color:{th.faint}; font-size:78%'>&nbsp;{n}</span>")
             self.words.setText("<div style='line-height:170%'>" + " &nbsp;&nbsp; ".join(parts) + "</div>")
+            self.words.setToolTip(f"Calculé sur {plural(st.words_sampled, 'message')} (les plus récents de la portée)")
         else:
             self.words.setText("—")
+        th = design.current()
+        grams = st.top_bigrams[:15] + st.top_trigrams[:10]
+        if grams:
+            self.ngrams.setText("<div style='line-height:180%'>" + " &nbsp;·&nbsp; ".join(
+                f"<a href='\"{escape(g, quote=True)}\"' style='text-decoration:none; color:{th.accent_text}'>"
+                f"{escape(g)}</a><span style='color:{th.faint}; font-size:78%'>&nbsp;{n}</span>"
+                for g, n in sorted(grams, key=lambda x: -x[1])) + "</div>")
+        else:
+            self.ngrams.setText("—")
+
+    # ------------------------------------------------------------------ #
+    # Exports et comparaison
+    # ------------------------------------------------------------------ #
+
+    def _save_path(self, title: str, name: str, filt: str) -> str:
+        from PySide6.QtCore import QStandardPaths
+        from pathlib import Path
+        base = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation)
+        path, _ = QFileDialog.getSaveFileName(self, title, str(Path(base) / name), filt)
+        return path
+
+    def export_csv(self) -> None:
+        if not self.stats:
+            return
+        path = self._save_path("Exporter les données", "statistiques-telegramor.csv", "CSV (*.csv)")
+        if path:
+            with open(path, "w", encoding="utf-8-sig", newline="") as f:     # BOM : ouverture correcte dans un tableur
+                f.write(to_csv(self.stats, self.scope_label()))
+
+    def export_png(self) -> None:
+        path = self._save_path("Exporter le tableau de bord", "statistiques-telegramor.png", "Image PNG (*.png)")
+        if path:
+            self.grab_dashboard().save(path if path.lower().endswith(".png") else path + ".png", "PNG")
+
+    def grab_dashboard(self):
+        """Image complète du tableau de bord (titres, légendes, unités et valeurs compris)."""
+        from PySide6.QtGui import QPixmap
+        body = self._body
+        pm = QPixmap(body.size())
+        pm.fill(QColor(design.current().window))
+        body.render(pm)
+        return pm
+
+    def open_compare(self) -> None:
+        dlg = CompareDialog(self.db, self.repo, self.theme, self)
+        dlg.show()
+        self._compare = dlg
 
     def retheme(self, theme: Theme) -> None:
         self.theme = theme
@@ -483,3 +596,137 @@ class StatisticsWindow(QDialog):
         conv_id = self.conv.currentData()
         if conv_id and self.stats:
             self.go_to_day.emit(conv_id, self.stats.per_month[i][0] + "-01")
+
+
+class _ScopePicker(QWidget):
+    """Choix d'une portée de comparaison : conversation, expéditeur, période."""
+
+    changed = Signal()
+
+    def __init__(self, title: str, repo: LibraryRepository, db: Database, parent=None) -> None:
+        super().__init__(parent)
+        from ui.advanced_search import OptionalDate
+        self.title = title
+        self.conv = QComboBox()
+        self.conv.addItem("Toute la bibliothèque", None)
+        for c in sorted(repo.list_conversations(), key=lambda c: c.name.casefold()):
+            self.conv.addItem(c.name, c.id)
+        self.year = QComboBox()
+        self.year.addItem("Toutes les années", None)
+        for y in repo.years():
+            self.year.addItem(y, y)
+        self.date_from = OptionalDate("Depuis le")
+        self.date_to = OptionalDate("Jusqu'au")
+        for c in (self.conv, self.year):
+            c.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            c.setMinimumContentsLength(14)
+            c.currentIndexChanged.connect(self.changed)
+        for d in (self.date_from, self.date_to):
+            d.changed.connect(self.changed)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        cap = QLabel(title.upper())
+        cap.setProperty("role", "overline")
+        lay.addWidget(cap)
+        lay.addWidget(self.conv)
+        lay.addWidget(self.year)
+        lay.addWidget(self.date_from)
+        lay.addWidget(self.date_to)
+
+    def scope(self) -> Scope:
+        a, b = self.date_from.value(), self.date_to.value()
+        y = self.year.currentData()
+        if y and not a and not b:
+            a, b = f"{y}-01-01", f"{y}-12-31"
+        label = self.conv.currentText() + (f" · {y}" if y and not (self.date_from.value() or self.date_to.value())
+                                           else "") + (f" · {a} → {b}" if self.date_from.value()
+                                                       or self.date_to.value() else "")
+        return Scope(label, self.conv.currentData(), None, a, b)
+
+
+class CompareDialog(QDialog):
+    """Comparaison de deux conversations, deux années ou deux périodes (volumes ramenés à la durée)."""
+
+    def __init__(self, db: Database, repo: LibraryRepository, theme: Theme, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Comparer")
+        self.db, self.repo, self.theme = db, repo, theme
+        self.a = _ScopePicker("Portée A", repo, db)
+        self.b = _ScopePicker("Portée B", repo, db)
+        years = repo.years()
+        if len(years) >= 2:                        # par défaut : les deux dernières années
+            self.a.year.setCurrentIndex(self.a.year.findData(years[1]))
+            self.b.year.setCurrentIndex(self.b.year.findData(years[0]))
+        for p in (self.a, self.b):
+            p.changed.connect(self.refresh)
+        self.table = QTableWidget(0, 4)
+        self.table.verticalHeader().hide()
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.hours_a, self.hours_b = BarChart(theme, 120), BarChart(theme, 120)
+        self.note = QLabel("Les volumes sont ramenés à la durée de chaque période (messages par jour, part de jours "
+                           "actifs, pour 100 messages) afin de comparer des périodes de longueurs différentes. "
+                           "L'écart est calculé de A vers B.")
+        self.note.setWordWrap(True)
+        self.note.setProperty("role", "caption")
+        export = QPushButton("Exporter (CSV)…")
+        icons.bind(export, "export", "muted", 16)
+        export.clicked.connect(self.export_csv)
+        pickers = QHBoxLayout()
+        pickers.setSpacing(18)
+        pickers.addWidget(self.a, 1)
+        pickers.addWidget(self.b, 1)
+        charts = QHBoxLayout()
+        self.hours_a_card = _section("Répartition horaire — A", self.hours_a, "% des messages")
+        self.hours_b_card = _section("Répartition horaire — B", self.hours_b, "% des messages")
+        charts.addWidget(self.hours_a_card)
+        charts.addWidget(self.hours_b_card)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 20, 22, 16)
+        lay.setSpacing(12)
+        lay.addWidget(dialog_header("Comparer", "Deux conversations, deux années ou deux périodes", "chart"))
+        lay.addLayout(pickers)
+        lay.addWidget(self.table, 1)
+        lay.addLayout(charts)
+        lay.addWidget(self.note)
+        lay.addWidget(export, 0, Qt.AlignRight)
+        self.resize(980, 820)
+        self.refresh()
+
+    def refresh(self) -> None:
+        self.result = compare(self.db, self.a.scope(), self.b.scope())
+        r = self.result
+        self.table.setHorizontalHeaderLabels(["Indicateur", f"A — {r.a.label}", f"B — {r.b.label}", "Écart (A → B)"])
+        self.table.setRowCount(len(r.rows))
+        for i, row in enumerate(r.rows):
+            for j, v in enumerate(row):
+                it = QTableWidgetItem(v)
+                if j:
+                    it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.table.setItem(i, j, it)
+        self.table.resizeColumnsToContents()
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        labels = [f"{h} h" if h % 3 == 0 else "" for h in range(24)]
+        for chart, values in ((self.hours_a, r.hours_pct[0]), (self.hours_b, r.hours_pct[1])):
+            chart.set_data(values, labels, [f"{h} h – {h + 1} h : {v} %" for h, v in enumerate(values)])
+
+    def export_csv(self) -> None:
+        import csv
+        from pathlib import Path
+        from PySide6.QtCore import QStandardPaths
+        base = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation)
+        path, _ = QFileDialog.getSaveFileName(self, "Exporter la comparaison",
+                                              str(Path(base) / "comparaison-telegramor.csv"), "CSV (*.csv)")
+        if not path:
+            return
+        r = self.result
+        with open(path, "w", encoding="utf-8-sig", newline="") as f:
+            w = csv.writer(f, delimiter=";")
+            w.writerow(["Indicateur", f"A — {r.a.label}", f"B — {r.b.label}", "Écart (A → B)"])
+            w.writerows(r.rows)
+            w.writerow([])
+            w.writerow(["Heure", "A (% des messages)", "B (% des messages)"])
+            w.writerows([(f"{h:02d}h", r.hours_pct[0][h], r.hours_pct[1][h]) for h in range(24)])
+            w.writerow([])
+            w.writerow(["Jour", "A (% des messages)", "B (% des messages)"])
+            w.writerows([(weekday_label(d), r.weekdays_pct[0][d], r.weekdays_pct[1][d]) for d in range(7)])

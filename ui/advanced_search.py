@@ -49,6 +49,13 @@ class OptionalDate(QWidget):
     def value(self) -> str | None:
         return self.edit.date().toString("yyyy-MM-dd") if self.check.isChecked() else None
 
+    def set_value(self, day: str | None) -> None:
+        self.blockSignals(True)
+        if day:
+            self.edit.setDate(QDate.fromString(day[:10], "yyyy-MM-dd"))
+        self.check.setChecked(bool(day))
+        self.blockSignals(False)
+
     def reset(self, default: QDate | None = None) -> None:
         self.check.setChecked(False)
         if default is not None and default.isValid():
@@ -73,6 +80,8 @@ class SearchFilters(QWidget):
         self.content = _combo([("Tous les types", ANY)] + [(label, key) for key, label in CONTENT_LABELS.items()])
         self.media = _combo([("Indifférent", ANY), ("Avec pièce jointe", True), ("Sans pièce jointe", False)])
         self.link = _combo([("Indifférent", ANY), ("Avec lien", True), ("Sans lien", False)])
+        self.reply = _combo([("Indifférent", ANY), ("Réponses uniquement", True), ("Hors réponses", False)])
+        self.reply.setToolTip("Messages qui citent (répondent à) un autre message")
         self.filename = QLineEdit(placeholderText="ex. facture, .pdf, IMG_2034")
         self.filename.setClearButtonEnabled(True)
         self.sort = _combo([("Pertinence", SORT_RELEVANCE), ("Plus récents d'abord", SORT_NEWEST),
@@ -113,19 +122,21 @@ class SearchFilters(QWidget):
             two.addLayout(col, 1)
         form.addSpacing(6)
         form.addLayout(two)
+        row("Réponse à un message", self.reply)
         row("Nom de fichier", self.filename)
         row("Tri", self.sort)
         form.addSpacing(8)
         form.addWidget(reset, 0, Qt.AlignLeft)
 
         for c in (self.mode, self.conversation, self.archive, self.content, self.media, self.link, self.sort,
-                  self.sender):
+                  self.sender, self.reply):
             # largeur limitée : les longs noms de conversation ne doivent pas élargir le panneau
             c.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
             c.setMinimumContentsLength(8)
         for c in (self.media, self.link):          # côte à côte : plus étroites
             c.setMinimumContentsLength(3)
-        for c in (self.mode, self.conversation, self.archive, self.content, self.media, self.link, self.sort):
+        for c in (self.mode, self.conversation, self.archive, self.content, self.media, self.link, self.sort,
+                  self.reply):
             c.currentIndexChanged.connect(self.changed)
         self.sender.currentTextChanged.connect(self.changed)
         self.date_from.changed.connect(self.changed)
@@ -166,7 +177,8 @@ class SearchFilters(QWidget):
 
     def reset(self) -> None:
         self.blockSignals(True)
-        for c in (self.mode, self.conversation, self.archive, self.content, self.media, self.link, self.sort):
+        for c in (self.mode, self.conversation, self.archive, self.content, self.media, self.link, self.sort,
+                  self.reply):
             c.setCurrentIndex(0)
         self.sender.setCurrentText("")
         self.date_from.reset()
@@ -178,7 +190,7 @@ class SearchFilters(QWidget):
     def active_count(self) -> int:
         q = self.to_query("")
         return sum(x is not None for x in (q.conversation_ids, q.archive_ids, q.sender, q.date_from, q.date_to,
-                                           q.content_type, q.has_media, q.has_link, q.filename))
+                                           q.content_type, q.has_media, q.has_link, q.filename, q.is_reply))
 
     def to_query(self, text: str) -> SearchQuery:
         def data(c: QComboBox):
@@ -192,4 +204,27 @@ class SearchFilters(QWidget):
             conversation_ids=[conv] if conv else None, archive_ids=[arch] if arch is not None else None,
             sender=sender, date_from=self.date_from.value(), date_to=self.date_to.value(),
             content_type=data(self.content), has_media=data(self.media), has_link=data(self.link),
-            filename=self.filename.text().strip() or None, sort=self.sort.currentData())
+            filename=self.filename.text().strip() or None, is_reply=data(self.reply), sort=self.sort.currentData())
+
+    def set_query(self, q: SearchQuery) -> None:
+        """Applique une recherche enregistrée ou de l'historique (le texte est géré par l'appelant)."""
+        self.blockSignals(True)
+
+        def pick(c: QComboBox, value) -> None:
+            i = c.findData(ANY if value is None else value)
+            c.setCurrentIndex(max(i, 0))
+
+        pick(self.mode, q.mode)
+        pick(self.conversation, q.conversation_ids[0] if q.conversation_ids else None)
+        pick(self.archive, q.archive_ids[0] if q.archive_ids else None)
+        pick(self.content, q.content_type)
+        pick(self.media, q.has_media)
+        pick(self.link, q.has_link)
+        pick(self.reply, q.is_reply)
+        pick(self.sort, q.sort)
+        self.sender.setCurrentText(q.sender or "")
+        self.filename.setText(q.filename or "")
+        for widget, value in ((self.date_from, q.date_from), (self.date_to, q.date_to)):
+            widget.set_value(value)
+        self.blockSignals(False)
+        self.changed.emit()
