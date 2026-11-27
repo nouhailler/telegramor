@@ -19,6 +19,7 @@ cp -r app database importer services ui main.py "$LIB/"
 find "$LIB" -name '__pycache__' -prune -exec rm -rf {} +
 cp README.md "$STAGE/usr/share/doc/$PKG/"
 cp -r docs "$STAGE/usr/share/doc/$PKG/"
+rm -rf "$STAGE/usr/share/doc/$PKG/docs/captures"     # captures d'écran : dans le dépôt seulement
 cp app/resources/icon.svg "$STAGE/usr/share/icons/hicolor/scalable/apps/$PKG.svg"
 
 cat > "$STAGE/usr/bin/$PKG" <<LAUNCH
